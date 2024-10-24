@@ -46,15 +46,50 @@ def send_command(event=None):
 # Function to receive data
 def receive_data():
     if ser.in_waiting:
-        incoming_data = ser.readline().decode('utf-8').strip()
-        data_text.insert(tk.END, incoming_data + "\n")
-        data_text.see(tk.END)
+        try:
+            # Read raw bytes and decode
+            raw_bytes = ser.readline().strip()
+            incoming_data = raw_bytes.decode('utf-8')  # Adjust encoding if necessary
+            
+            # Print raw data for debugging
+            print(f"Raw incoming data: {incoming_data}")
 
-        # Call the parsing function to update the entries
-        parse_and_update_entries(incoming_data)
+            # Validate the incoming data
+            if validate_protocol(incoming_data):
+                data_text.insert(tk.END, incoming_data + "\n")
+                data_text.see(tk.END)
 
+                # Call the parsing function to update the entries
+                parse_and_update_entries(incoming_data)
+            else:
+                print(f"Ignored invalid data: {incoming_data}")
+
+        except UnicodeDecodeError as e:
+            print(f"Decoding error: {e}")
+    
     # Call this function again after 100ms
     root.after(100, receive_data)
+
+def validate_protocol(data):
+    # Define the expected format
+    parts = data.split('_')
+    if len(parts) < 4:  # Ensure there are enough parts
+        return False
+
+    side = parts[0]
+    if side not in ['L', 'R']:  # Check for valid side
+        return False
+
+    try:
+        leg_number = int(parts[1])  # Validate leg number
+        servo_number = int(parts[2])  # Validate servo number
+        value = int(parts[3])  # Validate value
+    except ValueError:
+        return False  # If conversion fails, it's invalid
+
+    # Additional checks can be added here if needed, such as range checks for leg_number, servo_number, or value
+    return True
+
 
 def parse_and_update_entries(data):
     try:
