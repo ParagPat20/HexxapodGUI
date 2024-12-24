@@ -13,13 +13,15 @@ message_queue = queue.Queue()
 # Initialize config handler
 config_handler = ConfigHandler()
 
+serial_port = 'COM7'
+
 try:
-    ser = serial.Serial('COM7', 115200, timeout=1)
+    ser = serial.Serial(serial_port, 115200, timeout=1)
 except serial.SerialException:
     ser = None
     print("Failed to connect to serial port initially. Will attempt to reconnect...")
 
-def reconnect_serial():
+def reconnect_serial(serial_port = serial_port):
     """Attempt to reconnect to the serial port."""
     global ser
     max_attempts = 5
@@ -32,7 +34,7 @@ def reconnect_serial():
                 ser.close()
             
             # Try to establish a new connection
-            ser = serial.Serial('COM7', 115200, timeout=1)
+            ser = serial.Serial(serial_port, 115200, timeout=1)
             
             if ser.is_open:
                 message = "Successfully reconnected to serial port."
@@ -47,8 +49,8 @@ def reconnect_serial():
             message_queue.put(message)
             
             if attempt < max_attempts:
-                print(f"Retrying in 5 seconds...")
-                time.sleep(5)
+                print(f"Retrying in 2 seconds...")
+                time.sleep(2)
             else:
                 final_message = "Maximum reconnection attempts reached. Please check your connection and restart the application."
                 print(final_message)
@@ -72,7 +74,7 @@ def validate_input(P):
     if P == "": return True
     try:
         value = int(P)
-        return 0 <= value <= 2500
+        return 0 <= value <= 181
     except ValueError:
         return False
 
@@ -94,7 +96,7 @@ def on_entry_change(event, motor_id, slider, value_var, entry):
         value = entry.get()
         if value == "": value = "0"
         value = int(value)
-        if 0 <= value <= 2500:
+        if 0 <= value <= 181:
             slider.set(value)
             value_var.set(str(value))
             send_single_value(motor_id, value)
@@ -174,7 +176,7 @@ def create_slider(frame, motor_id, motor_name, row):
     label = ttk.Label(frame, text=f"{motor_id} ({motor_name})", style='Motor.TLabel')
     label.grid(row=row, column=0, padx=5, pady=2, sticky='w')
     
-    slider = ttk.Scale(frame, from_=0, to=2500, orient=tk.HORIZONTAL, length=250)
+    slider = ttk.Scale(frame, from_=0, to=181, orient=tk.HORIZONTAL, length=250)
     slider.grid(row=row, column=1, padx=5, pady=2, sticky='ew')
     
     value_var = tk.StringVar(value="0")
