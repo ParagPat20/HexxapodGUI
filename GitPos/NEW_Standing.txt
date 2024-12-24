@@ -1,6 +1,0 @@
-Front Left: 680, 1540, 2500
-Middle Left: 500, 1520, 1170, 1490
-Back Left: 2500, 1620, 500
-Front Right: 2000, 1500, 2500
-Middle Right: 2500, 1500, 2500, 1500
-Back Right: 500, 1500, 600

@@ -1,158 +1,358 @@
 import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import serial
+import time
+import threading
+import queue
+import os
+from config_handler import ConfigHandler
 
-# Setup the serial communication with the ESP32 (replace 'COMx' with your port)
-ser = serial.Serial('COM3', 9600)  # Replace with your correct port
+# Create a queue to hold messages from the serial thread
+message_queue = queue.Queue()
 
-class ServoEntry:
-    def __init__(self, frame, label_text, row):
-        self.label = tk.Label(frame, text=label_text)
-        self.label.grid(row=row, column=0, padx=5, pady=5, sticky='w')
+# Initialize config handler
+config_handler = ConfigHandler()
 
-        self.entry = tk.Entry(frame, width=8)
-        self.entry.grid(row=row, column=1, padx=5, pady=5)
+try:
+    ser = serial.Serial('COM7', 115200, timeout=1)
+except serial.SerialException:
+    ser = None
+    print("Failed to connect to serial port initially. Will attempt to reconnect...")
 
-class Leg:
-    def __init__(self, frame, leg_label, servo_labels, row_offset):
-        self.leg_title = tk.Label(frame, text=leg_label, font=("Helvetica", 12, "bold"))
-        self.leg_title.grid(row=row_offset, column=0, columnspan=2, pady=10)
+def reconnect_serial():
+    """Attempt to reconnect to the serial port."""
+    global ser
+    max_attempts = 5
+    attempt = 0
+    
+    while attempt < max_attempts:
+        try:
+            # Close the existing connection if it exists
+            if ser and ser.is_open:
+                ser.close()
+            
+            # Try to establish a new connection
+            ser = serial.Serial('COM7', 115200, timeout=1)
+            
+            if ser.is_open:
+                message = "Successfully reconnected to serial port."
+                print(message)
+                message_queue.put(message)
+                return True
+                
+        except serial.SerialException as e:
+            attempt += 1
+            message = f"Reconnection attempt {attempt}/{max_attempts} failed: {str(e)}"
+            print(message)
+            message_queue.put(message)
+            
+            if attempt < max_attempts:
+                print(f"Retrying in 5 seconds...")
+                time.sleep(5)
+            else:
+                final_message = "Maximum reconnection attempts reached. Please check your connection and restart the application."
+                print(final_message)
+                message_queue.put(final_message)
+                messagebox.showerror("Connection Error", final_message)
+                return False
 
-        self.servos = []
-        for i, servo_label in enumerate(servo_labels):
-            servo_entry = ServoEntry(frame, servo_label, row_offset + i + 1)
-            self.servos.append(servo_entry)
-
-    def get_values(self):
-        return [servo.entry.get() for servo in self.servos]
-
-    def set_values(self, values):
-        for servo, value in zip(self.servos, values):
-            servo.entry.delete(0, tk.END)
-            servo.entry.insert(0, value)
-
-# Function to send commands to ESP32
-def send_command(event=None):
-    for leg_index, leg in enumerate(left_legs + right_legs):
-        for servo_index, servo in enumerate(leg.servos):
-            value = servo.entry.get()
-            if value:
-                side = 'L' if leg_index < len(left_legs) else 'R'
-                command = f"{side}_{leg_index + 1}_{servo_index + 1}_{value}\n"
-                ser.write(command.encode('utf-8'))
-                print(f"Sent command: {command}")
-
-# Function to receive data
-def receive_data():
-    if ser.in_waiting:
-        incoming_data = ser.readline().decode('utf-8').strip()
-        data_text.insert(tk.END, incoming_data + "\n")
-        data_text.see(tk.END)
-
-        # Call the parsing function to update the entries
-        parse_and_update_entries(incoming_data)
-
-    # Call this function again after 100ms
-    root.after(100, receive_data)
-
-def parse_and_update_entries(data):
+def send_single_value(motor_id, value):
+    """Send a single motor value over serial."""
     try:
-        split_data = data.split('_')
+        if not ser or not ser.is_open:
+            if not reconnect_serial():
+                return
+        data = f"{motor_id}:{int(value)}\n"
+        ser.write(data.encode('ascii'))
+    except Exception as e:
+        messagebox.showerror("Error", f"An error occurred: {e}")
 
-        if len(split_data) < 3:
-            print(f"Incomplete data: {data}")
-            return
+def validate_input(P):
+    """Validate input to only allow numbers and empty string"""
+    if P == "": return True
+    try:
+        value = int(P)
+        return 0 <= value <= 2500
+    except ValueError:
+        return False
 
-        side = split_data[0]
-        leg_number = int(split_data[1])
-        servo_values = list(map(int, split_data[2:]))
+def on_slider_change(motor_id, value_var, slider, entry):
+    """Called when a slider value changes."""
+    value = int(slider.get())
+    value_var.set(str(value))
+    entry.delete(0, tk.END)
+    entry.insert(0, str(value))
 
-        update_servo_entries(side, leg_number, servo_values)
+def on_slider_release(event, motor_id, slider):
+    """Called when a slider is released."""
+    value = int(slider.get())
+    send_single_value(motor_id, value)
 
-    except ValueError as e:
-        print(f"Error converting values: {e}, data received: {data}")
+def on_entry_change(event, motor_id, slider, value_var, entry):
+    """Called when entry value is changed and Enter is pressed."""
+    try:
+        value = entry.get()
+        if value == "": value = "0"
+        value = int(value)
+        if 0 <= value <= 2500:
+            slider.set(value)
+            value_var.set(str(value))
+            send_single_value(motor_id, value)
+        else:
+            entry.delete(0, tk.END)
+            entry.insert(0, value_var.get())
+    except ValueError:
+        entry.delete(0, tk.END)
+        entry.insert(0, value_var.get())
 
-def update_servo_entries(side, leg_number, servo_values):
-    if side == 'L':
-        leg = left_legs[leg_number - 1]
-    else:
-        leg = right_legs[leg_number - 1]
+def save_current_values():
+    """Save current slider values to a config file"""
+    values = {}
+    for group_name, motors in motor_groups.items():
+        group_values = {}
+        for motor_id in motors.keys():
+            if motor_id in sliders:
+                group_values[motor_id] = int(sliders[motor_id].get())
+        values[group_name] = group_values
+    
+    try:
+        filename = filedialog.asksaveasfilename(
+            initialdir=config_handler.config_dir,
+            title="Save Configuration",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")]
+        )
+        if filename:
+            # Extract just the filename from the full path
+            name = os.path.basename(filename)
+            saved_file = config_handler.save_config(values, name)
+            messagebox.showinfo("Success", f"Configuration saved to {saved_file}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save configuration: {str(e)}")
 
-    leg.set_values(servo_values)
+def load_saved_values():
+    """Load values from a config file"""
+    try:
+        filename = filedialog.askopenfilename(
+            initialdir=config_handler.config_dir,
+            title="Load Configuration",
+            filetypes=[("JSON files", "*.json")]
+        )
+        if filename:
+            # Extract just the filename from the full path
+            values = config_handler.load_config(filename)
+            
+            print(f"Loaded values: {values}")  # Debug statement
+            for group_name, motors in values.items():
+                for motor_id, value in motors.items():
+                    if motor_id in sliders:
+                        print(f"Processing motor_id: {motor_id}")  # Debug statement
+                        if motor_id in sliders:
+                            print(f"Found {motor_id} in sliders")  # Debug statement
+                        if motor_id in entries:
+                            print(f"Found {motor_id} in entries")  # Debug statement
+                        if motor_id in sliders:
+                            if motor_id in entries:
+                                sliders[motor_id].set(value)
+                                entries[motor_id].delete(0, tk.END)
+                                entries[motor_id].insert(0, str(value))
+                            else:
+                                print(f"Warning: {motor_id} not found in entries")  # Debug statement
+                        else:
+                            print(f"Warning: {motor_id} not found in sliders")  # Debug statement
+                            sliders[motor_id].set(value)
+                            values[motor_id].set(str(value))
+                            entries[motor_id].delete(0, tk.END)
+                            entries[motor_id].insert(0, str(value))
+                        # Send the updated value to the device
+                        send_single_value(motor_id, value)
+            messagebox.showinfo("Success", "Configuration loaded successfully")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to load configuration: {str(e)}")
 
-def save_values():
-    saved_data = ""
-    for leg in left_legs + right_legs:
-        saved_data += f"{leg.leg_title.cget('text')}: {', '.join(leg.get_values())}\n"
-    saved_text.insert(tk.END, saved_data)
-    print("Values saved.")
+def create_slider(frame, motor_id, motor_name, row):
+    label = ttk.Label(frame, text=f"{motor_id} ({motor_name})", style='Motor.TLabel')
+    label.grid(row=row, column=0, padx=5, pady=2, sticky='w')
+    
+    slider = ttk.Scale(frame, from_=0, to=2500, orient=tk.HORIZONTAL, length=250)
+    slider.grid(row=row, column=1, padx=5, pady=2, sticky='ew')
+    
+    value_var = tk.StringVar(value="0")
+    
+    entry = ttk.Entry(frame, width=6, validate='key', validatecommand=vcmd)
+    entry.insert(0, "0")
+    entry.grid(row=row, column=2, padx=(5,0), pady=2)
+    
+    slider.configure(command=lambda v, var=value_var, s=slider, e=entry: 
+                    on_slider_change(None, var, s, e))
+    slider.bind('<ButtonRelease-1>', 
+                lambda e, id=motor_id, s=slider: on_slider_release(e, id, s))
+    entry.bind('<Return>', lambda e, id=motor_id, s=slider, var=value_var, ent=entry: 
+               on_entry_change(e, id, s, var, ent))
+    
+    return slider, value_var, entry
 
-# Create the main window
+# Motor grouping
+motor_groups = {
+    'left_front': {
+        "L1": "Front Leg",
+        "L2": "Front Lower",
+        "L3": "Front Middle"
+    },
+    'left_center': {
+        "L5": "Center Upper",
+        "L6": "Center Lower 2",
+        "L7": "Center Lower",
+        "L8": "Center Leg"
+    },
+    'left_back': {
+        "L9": "Back Mid",
+        "L10": "Back Lower",
+        "L12": "Back Leg"
+    },
+    'right_front': {
+        "R14": "Front Lower",
+        "R15": "Front Mid",
+        "R16": "Front Leg"
+    },
+    'right_center': {
+        "R6": "Center Upper",
+        "R8": "Center Leg",
+        "R10": "Center Lower 2",
+        "R12": "Center Lower"
+    },
+    'right_back': {
+        "R1": "Back Lower",
+        "R2": "Back Mid",
+        "R3": "Back Leg"
+    }
+}
+
+# GUI Setup
 root = tk.Tk()
-root.title("Hexapod Servo Control GUI")
+root.title("Hexapod Servo Controller")
+root.configure(bg='#f0f0f0')
 
-# Frame for hexapod design and servo entry
-hexapod_frame = tk.Frame(root)
-hexapod_frame.pack(side=tk.LEFT, padx=10, pady=10)
+# Main container
+main_frame = ttk.Frame(root, padding="10")
+main_frame.grid(row=0, column=0, sticky='nsew')
 
-# Left and Right Frames for motors
-left_frame = tk.Frame(hexapod_frame)
-left_frame.pack(side=tk.LEFT, padx=5)
+# Style configuration
+style = ttk.Style()
+style.configure('Header.TLabel', font=('Arial', 20, 'bold'), padding=10)
+style.configure('Motor.TLabel', font=('Arial', 11))
+style.configure('Group.TLabelframe.Label', font=('Arial', 12, 'bold'))
+style.configure('TLabelframe', padding=5)
 
-right_frame = tk.Frame(hexapod_frame)
-right_frame.pack(side=tk.RIGHT, padx=5)
+# Header
+header = ttk.Label(main_frame, text="Hexapod Servo Controller", style='Header.TLabel')
+header.grid(row=0, column=0, columnspan=2, pady=(0, 20))
 
-# Frame for data display and save
-data_frame = tk.Frame(root)
-data_frame.pack(side=tk.RIGHT, padx=10, pady=10)
+# Left side frame
+left_side = ttk.Frame(main_frame)
+left_side.grid(row=1, column=0, padx=10, sticky='n')
 
-# Define servo labels
-left_leg_labels = ["Front Left", "Middle Left", "Back Left"]
-right_leg_labels = ["Front Right", "Middle Right", "Back Right"]
+# Right side frame
+right_side = ttk.Frame(main_frame)
+right_side.grid(row=1, column=1, padx=10, sticky='n')
 
-left_servo_labels = [
-    ["LEFT_F_SERVO_1", "LEFT_F_SERVO_2", "LEFT_F_SERVO_3"],
-    ["LEFT_M_SERVO_1", "LEFT_M_SERVO_2", "LEFT_M_SERVO_3", "LEFT_M_SERVO_4"],
-    ["LEFT_B_SERVO_1", "LEFT_B_SERVO_2", "LEFT_B_SERVO_3"]
-]
+# Validation command for entries
+vcmd = (root.register(validate_input), '%P')
 
-right_servo_labels = [
-    ["RIGHT_F_SERVO_1", "RIGHT_F_SERVO_2", "RIGHT_F_SERVO_3"],
-    ["RIGHT_M_SERVO_1", "RIGHT_M_SERVO_2", "RIGHT_M_SERVO_3", "RIGHT_M_SERVO_4"],
-    ["RIGHT_B_SERVO_1", "RIGHT_B_SERVO_2", "RIGHT_B_SERVO_3"]
-]
+# Create frames for each group
+group_frames = {}
+sliders = {}
+values = {}
+entries = {}
 
-# Create leg instances for left and right legs
-left_legs = [Leg(left_frame, label, servos, i * 6) for i, (label, servos) in enumerate(zip(left_leg_labels, left_servo_labels))]
-right_legs = [Leg(right_frame, label, servos, i * 6) for i, (label, servos) in enumerate(zip(right_leg_labels, right_servo_labels))]
+# Left side groups
+for i, (group_name, motors) in enumerate([
+    ('left_front', motor_groups['left_front']),
+    ('left_center', motor_groups['left_center']),
+    ('left_back', motor_groups['left_back'])
+]):
+    frame = ttk.LabelFrame(left_side, text=group_name.replace('_', ' ').title())
+    frame.grid(row=i, column=0, pady=5, sticky='nsew')
+    group_frames[group_name] = frame
+    
+    for row, (motor_id, motor_name) in enumerate(motors.items()):
+        slider, value_var, entry = create_slider(frame, motor_id, motor_name, row)
+        sliders[motor_id] = slider
+        values[motor_id] = value_var
+        entries[motor_id] = entry
 
-# Label for incoming data
-data_label = tk.Label(data_frame, text="Incoming Data", font=("Helvetica", 12, "bold"))
-data_label.pack(pady=10)
+# Right side groups
+for i, (group_name, motors) in enumerate([
+    ('right_front', motor_groups['right_front']),
+    ('right_center', motor_groups['right_center']),
+    ('right_back', motor_groups['right_back'])
+]):
+    frame = ttk.LabelFrame(right_side, text=group_name.replace('_', ' ').title())
+    frame.grid(row=i, column=0, pady=5, sticky='nsew')
+    group_frames[group_name] = frame
+    
+    for row, (motor_id, motor_name) in enumerate(motors.items()):
+        slider, value_var, entry = create_slider(frame, motor_id, motor_name, row)
+        sliders[motor_id] = slider
+        values[motor_id] = value_var
+        entries[motor_id] = entry
 
-# Text area for displaying incoming serial data
-data_text = tk.Text(data_frame, height=15, width=40)
-data_text.pack(padx=10, pady=10)
+# Serial monitor at the bottom
+monitor_frame = ttk.LabelFrame(main_frame, text="Serial Monitor")
+monitor_frame.grid(row=2, column=0, columnspan=2, pady=10, sticky='ew')
 
-# Label for saved data
-saved_label = tk.Label(data_frame, text="Saved Values", font=("Helvetica", 12, "bold"))
-saved_label.pack(pady=10)
+text_widget = tk.Text(monitor_frame, height=6, width=80, font=("Consolas", 10))
+text_widget.grid(row=0, column=0, pady=5)
 
-# Text area for saving the current values
-saved_text = tk.Text(data_frame, height=10, width=40)
-saved_text.pack(padx=10, pady=10)
+scrollbar = ttk.Scrollbar(monitor_frame, orient="vertical", command=text_widget.yview)
+scrollbar.grid(row=0, column=1, sticky='ns')
+text_widget.configure(yscrollcommand=scrollbar.set)
 
-# Button to save current values
-save_button = tk.Button(data_frame, text="Save Values", command=save_values, font=("Helvetica", 12))
-save_button.pack(pady=10)
+# Add buttons frame
+buttons_frame = ttk.Frame(main_frame)
+buttons_frame.grid(row=3, column=0, columnspan=2, pady=10)
 
-# Bind the Enter key to send command
-root.bind('<Return>', send_command)
+# Add Save and Load buttons
+save_button = ttk.Button(buttons_frame, text="Save Values", command=save_current_values)
+save_button.pack(side=tk.LEFT, padx=5)
 
-# Start receiving data from serial
-root.after(100, receive_data)
+load_button = ttk.Button(buttons_frame, text="Load Values", command=load_saved_values)
+load_button.pack(side=tk.LEFT, padx=5)
 
-# Run the main Tkinter loop
+# Serial communication thread
+def read_from_serial():
+    while True:
+        try:
+            if not ser or not ser.is_open:
+                if not reconnect_serial():
+                    time.sleep(5)
+                    continue
+            if ser.in_waiting > 0:
+                message = ser.readline().decode('ascii').strip()
+                message_queue.put(message)
+            else:
+                time.sleep(0.01)
+        except serial.SerialException:
+            message_queue.put("Serial connection lost. Attempting to reconnect...")
+            if not reconnect_serial():
+                time.sleep(5)
+
+def update_text_widget():
+    while not message_queue.empty():
+        message = message_queue.get()
+        text_widget.insert(tk.END, message + '\n')
+        text_widget.see(tk.END)
+    root.after(50, update_text_widget)
+
+# Start threads
+serial_thread = threading.Thread(target=read_from_serial, daemon=True)
+serial_thread.start()
+update_text_widget()
+
+# Configure weights
+main_frame.columnconfigure(1, weight=1)
+root.columnconfigure(0, weight=1)
+root.rowconfigure(0, weight=1)
+
+# Run the GUI
 root.mainloop()
-
-# Close the serial connection when the GUI is closed
-ser.close()
