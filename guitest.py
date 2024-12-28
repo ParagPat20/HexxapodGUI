@@ -1,360 +1,541 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import serial
 import time
 import threading
 import queue
 import os
+import zmq
+import json
+import numpy as np
 from config_handler import ConfigHandler
+from SingleLegSimulation import LegSimulation
 
-# Create a queue to hold messages from the serial thread
-message_queue = queue.Queue()
-
-# Initialize config handler
-config_handler = ConfigHandler()
-
-serial_port = 'COM7'
-
-try:
-    ser = serial.Serial(serial_port, 115200, timeout=1)
-except serial.SerialException:
-    ser = None
-    print("Failed to connect to serial port initially. Will attempt to reconnect...")
-
-def reconnect_serial(serial_port = serial_port):
-    """Attempt to reconnect to the serial port."""
-    global ser
-    max_attempts = 5
-    attempt = 0
+class HexapodGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Hexapod Controller")
+        
+        # Initialize ZMQ
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.REQ)
+        self.socket.connect("tcp://raspberrypi:5555")  # Replace with your RPI's IP
+        
+        # Message queue for communication
+        self.message_queue = queue.Queue()
+        
+        # Initialize config handler
+        self.config_handler = ConfigHandler()
+        
+        # Default values
+        self.DEFAULT_LEG_LENGTHS = {
+            'S1': 32.25,
+            'S2': 44,
+            'S3': 69.5
+        }
+        
+        self.DEFAULT_LEG_TARGETS = {
+            'left_front': {'x': 70, 'y': 20, 'z': -30},
+            'left_center': {'x': 70, 'y': 0, 'z': -30},
+            'left_back': {'x': 70, 'y': -20, 'z': -30},
+            'right_front': {'x': 70, 'y': -20, 'z': -30},
+            'right_center': {'x': 70, 'y': 0, 'z': -30},
+            'right_back': {'x': 70, 'y': 20, 'z': -30}
+        }
+        
+        self.DEFAULT_SERVO_OFFSETS = {
+            'left_front': [0, 0, 0],
+            'left_center': [0, 0, 0],
+            'left_back': [0, 0, 0],
+            'right_front': [0, 0, 0],
+            'right_center': [0, 0, 0],
+            'right_back': [0, 0, 0]
+        }
+        
+        # Current values
+        self.leg_lengths = self.DEFAULT_LEG_LENGTHS.copy()
+        self.leg_targets = self.DEFAULT_LEG_TARGETS.copy()
+        self.servo_offsets = self.DEFAULT_SERVO_OFFSETS.copy()
+        
+        # UI elements
+        self.length_sliders = {}
+        self.target_sliders = {}
+        self.offset_sliders = {}
+        self.leg_simulations = {}
+        
+        # Motor grouping
+        self.motor_groups = {
+            'left_front': {
+                "L1": "Front Leg",
+                "L2": "Front Lower",
+                "L3": "Front Middle"
+            },
+            'left_center': {
+                "L5": "Center Upper",
+                "L6": "Center Lower 2",
+                "L7": "Center Lower",
+                "L8": "Center Leg"
+            },
+            'left_back': {
+                "L9": "Back Mid",
+                "L10": "Back Lower",
+                "L12": "Back Leg"
+            },
+            'right_front': {
+                "R14": "Front Lower",
+                "R15": "Front Mid",
+                "R16": "Front Leg"
+            },
+            'right_center': {
+                "R6": "Center Upper",
+                "R8": "Center Leg",
+                "R10": "Center Lower 2",
+                "R12": "Center Lower"
+            },
+            'right_back': {
+                "R1": "Back Lower",
+                "R2": "Back Mid",
+                "R3": "Back Leg"
+            }
+        }
+        
+        # Setup UI
+        self.setup_styles()
+        self.create_gui()
+        self.start_monitor()
     
-    while attempt < max_attempts:
+    def setup_styles(self):
+        """Configure ttk styles"""
+        style = ttk.Style()
+        style.configure('Header.TLabel', font=('Arial', 20, 'bold'), padding=10)
+        style.configure('Motor.TLabel', font=('Arial', 11))
+        style.configure('Group.TLabelframe.Label', font=('Arial', 12, 'bold'))
+        style.configure('TLabelframe', padding=5)
+    
+    def send_zmq_command(self, command_type, data):
+        """Send command to RPI via ZMQ"""
         try:
-            # Close the existing connection if it exists
-            if ser and ser.is_open:
-                ser.close()
-            
-            # Try to establish a new connection
-            ser = serial.Serial(serial_port, 115200, timeout=1)
-            
-            if ser.is_open:
-                message = "Successfully reconnected to serial port."
-                print(message)
-                message_queue.put(message)
-                return True
-                
-        except serial.SerialException as e:
-            attempt += 1
-            message = f"Reconnection attempt {attempt}/{max_attempts} failed: {str(e)}"
-            print(message)
-            message_queue.put(message)
-            
-            if attempt < max_attempts:
-                print(f"Retrying in 2 seconds...")
-                time.sleep(2)
+            message = {
+                'type': command_type,
+                'data': data
+            }
+            self.socket.send_json(message)
+            response = self.socket.recv_json()
+            if response['status'] == 'error':
+                self.message_queue.put(f"Error: {response['message']}")
             else:
-                final_message = "Maximum reconnection attempts reached. Please check your connection and restart the application."
-                print(final_message)
-                message_queue.put(final_message)
-                messagebox.showerror("Connection Error", final_message)
-                return False
-
-def send_single_value(motor_id, value):
-    """Send a single motor value over serial."""
-    try:
-        if not ser or not ser.is_open:
-            if not reconnect_serial():
-                return
-        data = f"{motor_id}:{int(value)}\n"
-        ser.write(data.encode('ascii'))
-    except Exception as e:
-        messagebox.showerror("Error", f"An error occurred: {e}")
-
-def validate_input(P):
-    """Validate input to only allow numbers and empty string"""
-    if P == "": return True
-    try:
-        value = int(P)
-        return 0 <= value <= 181
-    except ValueError:
-        return False
-
-def on_slider_change(motor_id, value_var, slider, entry):
-    """Called when a slider value changes."""
-    value = int(slider.get())
-    value_var.set(str(value))
-    entry.delete(0, tk.END)
-    entry.insert(0, str(value))
-
-def on_slider_release(event, motor_id, slider):
-    """Called when a slider is released."""
-    value = int(slider.get())
-    send_single_value(motor_id, value)
-
-def on_entry_change(event, motor_id, slider, value_var, entry):
-    """Called when entry value is changed and Enter is pressed."""
-    try:
-        value = entry.get()
-        if value == "": value = "0"
-        value = int(value)
-        if 0 <= value <= 181:
-            slider.set(value)
-            value_var.set(str(value))
-            send_single_value(motor_id, value)
+                self.message_queue.put(f"Success: {response['message']}")
+            return response
+        except Exception as e:
+            error_msg = f"ZMQ communication error: {e}"
+            self.message_queue.put(error_msg)
+            return None
+    
+    def validate_input(self, P):
+        """Validate input to only allow numbers and empty string"""
+        if P == "": return True
+        try:
+            value = float(P)
+            return -360 <= value <= 360
+        except ValueError:
+            return False
+    
+    def on_slider_change(self, value_var, slider, entry):
+        """Called when a slider value changes."""
+        value = slider.get()
+        value_var.set(str(value))
+        entry.delete(0, tk.END)
+        entry.insert(0, str(value))
+    
+    def update_leg_lengths(self, leg_group=None):
+        """Update leg lengths and send to RPI"""
+        if leg_group:
+            data = {
+                'leg_group': leg_group,
+                'lengths': [
+                    self.length_sliders[f'{leg_group}_S1'].get(),
+                    self.length_sliders[f'{leg_group}_S2'].get(),
+                    self.length_sliders[f'{leg_group}_S3'].get()
+                ]
+            }
         else:
+            data = {leg: [
+                self.length_sliders[f'{leg}_S1'].get(),
+                self.length_sliders[f'{leg}_S2'].get(),
+                self.length_sliders[f'{leg}_S3'].get()
+            ] for leg in self.motor_groups.keys()}
+        
+        self.send_zmq_command('update_lengths', data)
+        self.update_simulations()
+    
+    def update_targets(self, leg_group=None):
+        """Update leg targets and send to RPI"""
+        if leg_group:
+            data = {
+                'leg_group': leg_group,
+                'target': {
+                    'x': self.target_sliders[f'{leg_group}_x'].get(),
+                    'y': self.target_sliders[f'{leg_group}_y'].get(),
+                    'z': self.target_sliders[f'{leg_group}_z'].get()
+                }
+            }
+        else:
+            data = {leg: {
+                'x': self.target_sliders[f'{leg}_x'].get(),
+                'y': self.target_sliders[f'{leg}_y'].get(),
+                'z': self.target_sliders[f'{leg}_z'].get()
+            } for leg in self.motor_groups.keys()}
+        
+        self.send_zmq_command('update_targets', data)
+        self.update_simulations()
+    
+    def update_offsets(self, leg_group=None):
+        """Update servo offsets and send to RPI"""
+        if leg_group:
+            data = {
+                'leg_group': leg_group,
+                'offsets': [
+                    self.offset_sliders[f'{leg_group}_1'].get(),
+                    self.offset_sliders[f'{leg_group}_2'].get(),
+                    self.offset_sliders[f'{leg_group}_3'].get()
+                ]
+            }
+        else:
+            data = {leg: [
+                self.offset_sliders[f'{leg}_1'].get(),
+                self.offset_sliders[f'{leg}_2'].get(),
+                self.offset_sliders[f'{leg}_3'].get()
+            ] for leg in self.motor_groups.keys()}
+        
+        self.send_zmq_command('update_offsets', data)
+        self.update_simulations()
+    
+    def create_leg_simulation(self, leg_group):
+        """Create a simulation window for a specific leg"""
+        sim = LegSimulation()
+        sim.fig.canvas.manager.set_window_title(f"{leg_group.replace('_', ' ').title()} Simulation")
+        self.leg_simulations[leg_group] = sim
+        return sim
+    
+    def update_simulations(self):
+        """Update all leg simulations with current values"""
+        for leg_group, sim in self.leg_simulations.items():
+            # Update leg lengths
+            sim.L1 = self.length_sliders[f'{leg_group}_S1'].get()
+            sim.L2 = self.length_sliders[f'{leg_group}_S2'].get()
+            sim.L3 = self.length_sliders[f'{leg_group}_S3'].get()
+            
+            # Update target position
+            target = np.array([
+                self.target_sliders[f'{leg_group}_x'].get(),
+                self.target_sliders[f'{leg_group}_y'].get(),
+                self.target_sliders[f'{leg_group}_z'].get()
+            ])
+            
+            # Calculate inverse kinematics
+            angles = sim.inverse_kinematics(target)
+            if angles is not None:
+                # Add offsets
+                angles = angles + np.array([
+                    self.offset_sliders[f'{leg_group}_1'].get(),
+                    self.offset_sliders[f'{leg_group}_2'].get(),
+                    self.offset_sliders[f'{leg_group}_3'].get()
+                ])
+                
+                # Update simulation
+                sim.update(None)
+    
+    def create_parameter_sliders(self, parent_frame, leg_group):
+        """Create sliders for all parameters of a leg group"""
+        frame = ttk.LabelFrame(parent_frame, text=leg_group.replace('_', ' ').title())
+        frame.pack(fill='x', padx=5, pady=5)
+        
+        # Validation command for entries
+        vcmd = (self.root.register(self.validate_input), '%P')
+        
+        # Length sliders
+        length_frame = ttk.LabelFrame(frame, text="Lengths")
+        length_frame.pack(fill='x', padx=5, pady=5)
+        
+        for i, segment in enumerate(['S1', 'S2', 'S3']):
+            ttk.Label(length_frame, text=f"Length {segment}").grid(row=i, column=0, padx=5, pady=2)
+            
+            # Create slider
+            slider = ttk.Scale(length_frame, from_=0, to=100, orient='horizontal')
+            slider.set(self.leg_lengths[segment])
+            slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
+            self.length_sliders[f'{leg_group}_{segment}'] = slider
+            
+            # Create entry for direct value input
+            value_var = tk.StringVar(value=str(slider.get()))
+            entry = ttk.Entry(length_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
+            entry.grid(row=i, column=2, padx=5, pady=2)
+            
+            # Connect slider and entry
+            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
+                      self._on_entry_change(e, s, var, ent))
+        
+        # Target sliders
+        target_frame = ttk.LabelFrame(frame, text="Target Position")
+        target_frame.pack(fill='x', padx=5, pady=5)
+        
+        for i, axis in enumerate(['x', 'y', 'z']):
+            ttk.Label(target_frame, text=f"{axis.upper()} Position").grid(row=i, column=0, padx=5, pady=2)
+            
+            # Create slider
+            slider = ttk.Scale(target_frame, from_=-200, to=200, orient='horizontal')
+            slider.set(self.leg_targets[leg_group][axis])
+            slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
+            self.target_sliders[f'{leg_group}_{axis}'] = slider
+            
+            # Create entry for direct value input
+            value_var = tk.StringVar(value=str(slider.get()))
+            entry = ttk.Entry(target_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
+            entry.grid(row=i, column=2, padx=5, pady=2)
+            
+            # Connect slider and entry
+            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
+                      self._on_entry_change(e, s, var, ent))
+        
+        # Offset sliders
+        offset_frame = ttk.LabelFrame(frame, text="Servo Offsets")
+        offset_frame.pack(fill='x', padx=5, pady=5)
+        
+        for i in range(3):
+            ttk.Label(offset_frame, text=f"Servo {i+1} Offset").grid(row=i, column=0, padx=5, pady=2)
+            
+            # Create slider
+            slider = ttk.Scale(offset_frame, from_=-30, to=30, orient='horizontal')
+            slider.set(self.servo_offsets[leg_group][i])
+            slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
+            self.offset_sliders[f'{leg_group}_{i+1}'] = slider
+            
+            # Create entry for direct value input
+            value_var = tk.StringVar(value=str(slider.get()))
+            entry = ttk.Entry(offset_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
+            entry.grid(row=i, column=2, padx=5, pady=2)
+            
+            # Connect slider and entry
+            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
+                      self._on_entry_change(e, s, var, ent))
+        
+        # Add update buttons
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Button(button_frame, text="Update Lengths", 
+                   command=lambda: self.update_leg_lengths(leg_group)).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Update Targets", 
+                   command=lambda: self.update_targets(leg_group)).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Update Offsets", 
+                   command=lambda: self.update_offsets(leg_group)).pack(side='left', padx=5)
+        
+        return frame
+    
+    def _on_slider_change(self, value, value_var, entry):
+        """Handle slider value changes"""
+        try:
+            value = float(value)
+            value_var.set(f"{value:.1f}")
+            entry.delete(0, tk.END)
+            entry.insert(0, f"{value:.1f}")
+        except ValueError:
+            pass
+    
+    def _on_entry_change(self, event, slider, value_var, entry):
+        """Handle entry value changes"""
+        try:
+            value = float(entry.get())
+            if slider['from'] <= value <= slider['to']:
+                slider.set(value)
+                value_var.set(f"{value:.1f}")
+            else:
+                entry.delete(0, tk.END)
+                entry.insert(0, value_var.get())
+        except ValueError:
             entry.delete(0, tk.END)
             entry.insert(0, value_var.get())
-    except ValueError:
-        entry.delete(0, tk.END)
-        entry.insert(0, value_var.get())
-
-def save_current_values():
-    """Save current slider values to a config file"""
-    values = {}
-    for group_name, motors in motor_groups.items():
-        group_values = {}
-        for motor_id in motors.keys():
-            if motor_id in sliders:
-                group_values[motor_id] = int(sliders[motor_id].get())
-        values[group_name] = group_values
     
-    try:
-        filename = filedialog.asksaveasfilename(
-            initialdir=config_handler.config_dir,
-            title="Save Configuration",
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json")]
-        )
-        if filename:
-            # Extract just the filename from the full path
-            name = os.path.basename(filename)
-            saved_file = config_handler.save_config(values, name)
-            messagebox.showinfo("Success", f"Configuration saved to {saved_file}")
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to save configuration: {str(e)}")
-
-def load_saved_values():
-    """Load values from a config file"""
-    try:
-        filename = filedialog.askopenfilename(
-            initialdir=config_handler.config_dir,
-            title="Load Configuration",
-            filetypes=[("JSON files", "*.json")]
-        )
-        if filename:
-            # Extract just the filename from the full path
-            values = config_handler.load_config(filename)
-            
-            print(f"Loaded values: {values}")  # Debug statement
-            for group_name, motors in values.items():
-                for motor_id, value in motors.items():
-                    if motor_id in sliders:
-                        print(f"Processing motor_id: {motor_id}")  # Debug statement
-                        if motor_id in sliders:
-                            print(f"Found {motor_id} in sliders")  # Debug statement
-                        if motor_id in entries:
-                            print(f"Found {motor_id} in entries")  # Debug statement
-                        if motor_id in sliders:
-                            if motor_id in entries:
-                                sliders[motor_id].set(value)
-                                entries[motor_id].delete(0, tk.END)
-                                entries[motor_id].insert(0, str(value))
-                            else:
-                                print(f"Warning: {motor_id} not found in entries")  # Debug statement
-                        else:
-                            print(f"Warning: {motor_id} not found in sliders")  # Debug statement
-                            sliders[motor_id].set(value)
-                            values[motor_id].set(str(value))
-                            entries[motor_id].delete(0, tk.END)
-                            entries[motor_id].insert(0, str(value))
-                        # Send the updated value to the device
-                        send_single_value(motor_id, value)
-            messagebox.showinfo("Success", "Configuration loaded successfully")
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to load configuration: {str(e)}")
-
-def create_slider(frame, motor_id, motor_name, row):
-    label = ttk.Label(frame, text=f"{motor_id} ({motor_name})", style='Motor.TLabel')
-    label.grid(row=row, column=0, padx=5, pady=2, sticky='w')
-    
-    slider = ttk.Scale(frame, from_=0, to=181, orient=tk.HORIZONTAL, length=250)
-    slider.grid(row=row, column=1, padx=5, pady=2, sticky='ew')
-    
-    value_var = tk.StringVar(value="0")
-    
-    entry = ttk.Entry(frame, width=6, validate='key', validatecommand=vcmd)
-    entry.insert(0, "0")
-    entry.grid(row=row, column=2, padx=(5,0), pady=2)
-    
-    slider.configure(command=lambda v, var=value_var, s=slider, e=entry: 
-                    on_slider_change(None, var, s, e))
-    slider.bind('<ButtonRelease-1>', 
-                lambda e, id=motor_id, s=slider: on_slider_release(e, id, s))
-    entry.bind('<Return>', lambda e, id=motor_id, s=slider, var=value_var, ent=entry: 
-               on_entry_change(e, id, s, var, ent))
-    
-    return slider, value_var, entry
-
-# Motor grouping
-motor_groups = {
-    'left_front': {
-        "L1": "Front Leg",
-        "L2": "Front Lower",
-        "L3": "Front Middle"
-    },
-    'left_center': {
-        "L5": "Center Upper",
-        "L6": "Center Lower 2",
-        "L7": "Center Lower",
-        "L8": "Center Leg"
-    },
-    'left_back': {
-        "L9": "Back Mid",
-        "L10": "Back Lower",
-        "L12": "Back Leg"
-    },
-    'right_front': {
-        "R14": "Front Lower",
-        "R15": "Front Mid",
-        "R16": "Front Leg"
-    },
-    'right_center': {
-        "R6": "Center Upper",
-        "R8": "Center Leg",
-        "R10": "Center Lower 2",
-        "R12": "Center Lower"
-    },
-    'right_back': {
-        "R1": "Back Lower",
-        "R2": "Back Mid",
-        "R3": "Back Leg"
-    }
-}
-
-# GUI Setup
-root = tk.Tk()
-root.title("Hexapod Servo Controller")
-root.configure(bg='#f0f0f0')
-
-# Main container
-main_frame = ttk.Frame(root, padding="10")
-main_frame.grid(row=0, column=0, sticky='nsew')
-
-# Style configuration
-style = ttk.Style()
-style.configure('Header.TLabel', font=('Arial', 20, 'bold'), padding=10)
-style.configure('Motor.TLabel', font=('Arial', 11))
-style.configure('Group.TLabelframe.Label', font=('Arial', 12, 'bold'))
-style.configure('TLabelframe', padding=5)
-
-# Header
-header = ttk.Label(main_frame, text="Hexapod Servo Controller", style='Header.TLabel')
-header.grid(row=0, column=0, columnspan=2, pady=(0, 20))
-
-# Left side frame
-left_side = ttk.Frame(main_frame)
-left_side.grid(row=1, column=0, padx=10, sticky='n')
-
-# Right side frame
-right_side = ttk.Frame(main_frame)
-right_side.grid(row=1, column=1, padx=10, sticky='n')
-
-# Validation command for entries
-vcmd = (root.register(validate_input), '%P')
-
-# Create frames for each group
-group_frames = {}
-sliders = {}
-values = {}
-entries = {}
-
-# Left side groups
-for i, (group_name, motors) in enumerate([
-    ('left_front', motor_groups['left_front']),
-    ('left_center', motor_groups['left_center']),
-    ('left_back', motor_groups['left_back'])
-]):
-    frame = ttk.LabelFrame(left_side, text=group_name.replace('_', ' ').title())
-    frame.grid(row=i, column=0, pady=5, sticky='nsew')
-    group_frames[group_name] = frame
-    
-    for row, (motor_id, motor_name) in enumerate(motors.items()):
-        slider, value_var, entry = create_slider(frame, motor_id, motor_name, row)
-        sliders[motor_id] = slider
-        values[motor_id] = value_var
-        entries[motor_id] = entry
-
-# Right side groups
-for i, (group_name, motors) in enumerate([
-    ('right_front', motor_groups['right_front']),
-    ('right_center', motor_groups['right_center']),
-    ('right_back', motor_groups['right_back'])
-]):
-    frame = ttk.LabelFrame(right_side, text=group_name.replace('_', ' ').title())
-    frame.grid(row=i, column=0, pady=5, sticky='nsew')
-    group_frames[group_name] = frame
-    
-    for row, (motor_id, motor_name) in enumerate(motors.items()):
-        slider, value_var, entry = create_slider(frame, motor_id, motor_name, row)
-        sliders[motor_id] = slider
-        values[motor_id] = value_var
-        entries[motor_id] = entry
-
-# Serial monitor at the bottom
-monitor_frame = ttk.LabelFrame(main_frame, text="Serial Monitor")
-monitor_frame.grid(row=2, column=0, columnspan=2, pady=10, sticky='ew')
-
-text_widget = tk.Text(monitor_frame, height=6, width=80, font=("Consolas", 10))
-text_widget.grid(row=0, column=0, pady=5)
-
-scrollbar = ttk.Scrollbar(monitor_frame, orient="vertical", command=text_widget.yview)
-scrollbar.grid(row=0, column=1, sticky='ns')
-text_widget.configure(yscrollcommand=scrollbar.set)
-
-# Add buttons frame
-buttons_frame = ttk.Frame(main_frame)
-buttons_frame.grid(row=3, column=0, columnspan=2, pady=10)
-
-# Add Save and Load buttons
-save_button = ttk.Button(buttons_frame, text="Save Values", command=save_current_values)
-save_button.pack(side=tk.LEFT, padx=5)
-
-load_button = ttk.Button(buttons_frame, text="Load Values", command=load_saved_values)
-load_button.pack(side=tk.LEFT, padx=5)
-
-# Serial communication thread
-def read_from_serial():
-    while True:
+    def save_current_values(self):
+        """Save current configuration to file"""
         try:
-            if not ser or not ser.is_open:
-                if not reconnect_serial():
-                    time.sleep(5)
-                    continue
-            if ser.in_waiting > 0:
-                message = ser.readline().decode('ascii').strip()
-                message_queue.put(message)
-            else:
-                time.sleep(0.01)
-        except serial.SerialException:
-            message_queue.put("Serial connection lost. Attempting to reconnect...")
-            if not reconnect_serial():
-                time.sleep(5)
+            config = {
+                'leg_lengths': {leg_group: {
+                    'S1': self.length_sliders[f'{leg_group}_S1'].get(),
+                    'S2': self.length_sliders[f'{leg_group}_S2'].get(),
+                    'S3': self.length_sliders[f'{leg_group}_S3'].get()
+                } for leg_group in self.motor_groups.keys()},
+                'targets': {leg_group: {
+                    'x': self.target_sliders[f'{leg_group}_x'].get(),
+                    'y': self.target_sliders[f'{leg_group}_y'].get(),
+                    'z': self.target_sliders[f'{leg_group}_z'].get()
+                } for leg_group in self.motor_groups.keys()},
+                'offsets': {leg_group: [
+                    self.offset_sliders[f'{leg_group}_1'].get(),
+                    self.offset_sliders[f'{leg_group}_2'].get(),
+                    self.offset_sliders[f'{leg_group}_3'].get()
+                ] for leg_group in self.motor_groups.keys()}
+            }
+            
+            filename = filedialog.asksaveasfilename(
+                initialdir=self.config_handler.config_dir,
+                title="Save Configuration",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json")]
+            )
+            
+            if filename:
+                with open(filename, 'w') as f:
+                    json.dump(config, f, indent=4)
+                self.message_queue.put(f"Configuration saved to {filename}")
+        
+        except Exception as e:
+            self.message_queue.put(f"Error saving configuration: {e}")
+            messagebox.showerror("Error", f"Failed to save configuration: {e}")
+    
+    def load_configuration(self):
+        """Load configuration from file"""
+        try:
+            filename = filedialog.askopenfilename(
+                initialdir=self.config_handler.config_dir,
+                title="Load Configuration",
+                filetypes=[("JSON files", "*.json")]
+            )
+            
+            if filename:
+                with open(filename, 'r') as f:
+                    config = json.load(f)
+                
+                # Update leg lengths
+                for leg_group, lengths in config['leg_lengths'].items():
+                    for segment, value in lengths.items():
+                        self.length_sliders[f'{leg_group}_{segment}'].set(value)
+                
+                # Update targets
+                for leg_group, target in config['targets'].items():
+                    for axis, value in target.items():
+                        self.target_sliders[f'{leg_group}_{axis}'].set(value)
+                
+                # Update offsets
+                for leg_group, offsets in config['offsets'].items():
+                    for i, value in enumerate(offsets):
+                        self.offset_sliders[f'{leg_group}_{i+1}'].set(value)
+                
+                # Update all legs
+                self.update_leg_lengths()
+                self.update_targets()
+                self.update_offsets()
+                
+                self.message_queue.put(f"Configuration loaded from {filename}")
+        
+        except Exception as e:
+            self.message_queue.put(f"Error loading configuration: {e}")
+            messagebox.showerror("Error", f"Failed to load configuration: {e}")
+    
+    def create_gui(self):
+        """Create the main GUI layout"""
+        # Create main container with scrollbar
+        main_container = ttk.Frame(self.root)
+        main_container.pack(fill='both', expand=True)
+        
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(main_container)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack the scrollbar and canvas
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Header
+        header = ttk.Label(scrollable_frame, text="Hexapod Controller", style='Header.TLabel')
+        header.pack(fill='x', pady=10)
+        
+        # Create frames for left and right sides
+        left_frame = ttk.Frame(scrollable_frame)
+        left_frame.pack(side='left', fill='both', padx=10, pady=5)
+        
+        right_frame = ttk.Frame(scrollable_frame)
+        right_frame.pack(side='left', fill='both', padx=10, pady=5)
+        
+        # Create parameter controls for each leg group
+        left_legs = ['left_front', 'left_center', 'left_back']
+        right_legs = ['right_front', 'right_center', 'right_back']
+        
+        for leg_group in left_legs:
+            self.create_parameter_sliders(left_frame, leg_group)
+            self.create_leg_simulation(leg_group)
+        
+        for leg_group in right_legs:
+            self.create_parameter_sliders(right_frame, leg_group)
+            self.create_leg_simulation(leg_group)
+        
+        # Create global control buttons
+        control_frame = ttk.LabelFrame(scrollable_frame, text="Global Controls")
+        control_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Button(control_frame, text="Update All Lengths", 
+                   command=lambda: self.update_leg_lengths()).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="Update All Targets", 
+                   command=lambda: self.update_targets()).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="Update All Offsets", 
+                   command=lambda: self.update_offsets()).pack(side='left', padx=5)
+        
+        # Add save/load configuration buttons
+        config_frame = ttk.Frame(scrollable_frame)
+        config_frame.pack(fill='x', padx=10, pady=5)
+        
+        ttk.Button(config_frame, text="Save Configuration", 
+                   command=self.save_current_values).pack(side='left', padx=5)
+        ttk.Button(config_frame, text="Load Configuration", 
+                   command=self.load_configuration).pack(side='left', padx=5)
+        
+        # Communication monitor
+        monitor_frame = ttk.LabelFrame(scrollable_frame, text="Communication Monitor")
+        monitor_frame.pack(fill='x', padx=10, pady=5)
+        
+        self.text_widget = tk.Text(monitor_frame, height=6, width=80, font=("Consolas", 10))
+        self.text_widget.pack(side='left', fill='both', expand=True)
+        
+        monitor_scrollbar = ttk.Scrollbar(monitor_frame, orient="vertical", 
+                                        command=self.text_widget.yview)
+        monitor_scrollbar.pack(side='right', fill='y')
+        self.text_widget.configure(yscrollcommand=monitor_scrollbar.set)
+    
+    def update_monitor(self):
+        """Update the monitor text widget with messages from the queue"""
+        while not self.message_queue.empty():
+            message = self.message_queue.get()
+            self.text_widget.insert(tk.END, message + '\n')
+            self.text_widget.see(tk.END)
+        self.root.after(50, self.update_monitor)
+    
+    def start_monitor(self):
+        """Start the monitor update loop"""
+        self.update_monitor()
+    
+    def cleanup(self):
+        """Cleanup resources"""
+        if hasattr(self, 'socket'):
+            self.socket.close()
+        if hasattr(self, 'context'):
+            self.context.term()
 
-def update_text_widget():
-    while not message_queue.empty():
-        message = message_queue.get()
-        text_widget.insert(tk.END, message + '\n')
-        text_widget.see(tk.END)
-    root.after(50, update_text_widget)
+def main():
+    root = tk.Tk()
+    app = HexapodGUI(root)
+    root.protocol("WM_DELETE_WINDOW", lambda: (app.cleanup(), root.destroy()))
+    root.mainloop()
 
-# Start threads
-serial_thread = threading.Thread(target=read_from_serial, daemon=True)
-serial_thread.start()
-update_text_widget()
-
-# Configure weights
-main_frame.columnconfigure(1, weight=1)
-root.columnconfigure(0, weight=1)
-root.rowconfigure(0, weight=1)
-
-# Run the GUI
-root.mainloop()
+if __name__ == "__main__":
+    main()
