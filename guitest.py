@@ -18,7 +18,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://raspberrypi:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.174.39:5555")  # Replace with your RPI's IP
         
         # Message queue for communication
         self.message_queue = queue.Queue()
