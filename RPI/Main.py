@@ -130,6 +130,8 @@ class HexapodServer:
                 motor_id = data.get('motor_id')
                 value = data.get('value')
                 if motor_id and value is not None:
+                    # Ensure value is within 0-180 range
+                    value = max(0, min(180, float(value)))
                     # Send command to the motor using SerialCommunicator
                     if self.serial_comm.send_command(motor_id, int(value)):
                         print(f"Motor {motor_id} updated to position {value}")

@@ -137,7 +137,7 @@ class HexapodGUI:
         if P == "": return True
         try:
             value = float(P)
-            return -360 <= value <= 360
+            return 0 <= value <= 180  # Allow values between 0 and 180
         except ValueError:
             return False
     
@@ -658,12 +658,13 @@ class HexapodGUI:
             for i, (motor_id, motor_name) in enumerate(motors.items()):
                 ttk.Label(frame, text=motor_name).grid(row=i, column=0, padx=5, pady=2, sticky='w')
                 
-                # Create slider
-                slider = ttk.Scale(frame, from_=-90, to=90, orient='horizontal')
+                # Create slider with range 0-180
+                slider = ttk.Scale(frame, from_=0, to=180, orient='horizontal')
+                slider.set(90)  # Set default position to middle
                 slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
                 
                 # Create entry for direct value input
-                value_var = tk.StringVar(value="0")
+                value_var = tk.StringVar(value="90")
                 entry = ttk.Entry(frame, textvariable=value_var, width=8)
                 entry.grid(row=i, column=2, padx=5, pady=2)
                 
