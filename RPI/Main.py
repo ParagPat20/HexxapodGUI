@@ -80,6 +80,7 @@ class HexapodServer:
         try:
             command_type = message.get('type')
             data = message.get('data')
+            print(f"Received command: {command_type}")
             
             if command_type == 'update_lengths':
                 if 'leg_group' in data:
@@ -93,12 +94,28 @@ class HexapodServer:
                 if 'leg_group' in data:
                     target = [data['target']['x'], data['target']['y'], data['target']['z']]
                     angles = self.hexapod.move_leg(data['leg_group'], target)
-                    self._send_motor_commands(data['leg_group'], angles)
+                    if angles is not None:
+                        # Send angles to motors
+                        motors = self.hexapod.motor_groups[data['leg_group']]
+                        for motor_id, angle in zip(motors.keys(), angles):
+                            if not self.serial_comm.send_command(motor_id, int(angle)):
+                                return {
+                                    "status": "error",
+                                    "message": f"Failed to update motor {motor_id}"
+                                }
                 else:
-                    for leg_group, target_data in data.items():
-                        target = [target_data['x'], target_data['y'], target_data['z']]
-                        angles = self.hexapod.move_leg(leg_group, target)
-                        self._send_motor_commands(leg_group, angles)
+                    targets = {leg: [data[leg]['x'], data[leg]['y'], data[leg]['z']] 
+                             for leg in data}
+                    angles_dict = self.hexapod.move_all_legs(targets)
+                    if angles_dict:
+                        for leg_group, angles in angles_dict.items():
+                            motors = self.hexapod.motor_groups[leg_group]
+                            for motor_id, angle in zip(motors.keys(), angles):
+                                if not self.serial_comm.send_command(motor_id, int(angle)):
+                                    return {
+                                        "status": "error",
+                                        "message": f"Failed to update motor {motor_id}"
+                                    }
                 return {"status": "success", "message": "Targets updated and movements executed"}
             
             elif command_type == 'update_offsets':
@@ -108,6 +125,25 @@ class HexapodServer:
                     for leg_group, offsets in data.items():
                         self.hexapod.add_angle_offsets(leg_group, offsets)
                 return {"status": "success", "message": "Servo offsets updated"}
+            
+            elif command_type == 'update_motor':
+                motor_id = data.get('motor_id')
+                value = data.get('value')
+                if motor_id and value is not None:
+                    # Send command to the motor using SerialCommunicator
+                    if self.serial_comm.send_command(motor_id, int(value)):
+                        print(f"Motor {motor_id} updated to position {value}")
+                        return {"status": "success", "message": f"Motor {motor_id} updated to position {value}"}
+                    else:
+                        return {
+                            "status": "error",
+                            "message": f"Failed to update motor {motor_id}"
+                        }
+                else:
+                    return {
+                        "status": "error",
+                        "message": "Invalid motor_id or value"
+                    }
             
             else:
                 return {
