@@ -1,6 +1,7 @@
 import zmq
 import json
 from HexapodController import HexapodController
+from serial_communication import SerialCommunicator
 
 def main():
     # Initialize ZMQ context and socket
@@ -10,6 +11,9 @@ def main():
     
     # Initialize hexapod controller
     hexapod = HexapodController()
+    
+    # Initialize serial communicator
+    serial_comm = SerialCommunicator(port='/dev/ttyUSB0')
     
     print("Hexapod server started, waiting for commands...")
     
@@ -36,12 +40,32 @@ def main():
                     if 'leg_group' in data:
                         # Move specific leg
                         target = [data['target']['x'], data['target']['y'], data['target']['z']]
-                        hexapod.move_leg(data['leg_group'], target)
+                        angles = hexapod.move_leg(data['leg_group'], target)
+                        if angles is not None:
+                            # Send angles to motors
+                            motors = hexapod.motor_groups[data['leg_group']]
+                            for motor_id, angle in zip(motors.keys(), angles):
+                                if not serial_comm.send_command(motor_id, int(angle)):
+                                    response = {
+                                        "status": "error",
+                                        "message": f"Failed to update motor {motor_id}"
+                                    }
+                                    break
                     else:
                         # Move all legs
                         targets = {leg: [data[leg]['x'], data[leg]['y'], data[leg]['z']] 
                                  for leg in data}
-                        hexapod.move_all_legs(targets)
+                        angles_dict = hexapod.move_all_legs(targets)
+                        if angles_dict:
+                            for leg_group, angles in angles_dict.items():
+                                motors = hexapod.motor_groups[leg_group]
+                                for motor_id, angle in zip(motors.keys(), angles):
+                                    if not serial_comm.send_command(motor_id, int(angle)):
+                                        response = {
+                                            "status": "error",
+                                            "message": f"Failed to update motor {motor_id}"
+                                        }
+                                        break
                 
                 elif command_type == 'update_offsets':
                     if 'leg_group' in data:
@@ -56,9 +80,14 @@ def main():
                     motor_id = data.get('motor_id')
                     value = data.get('value')
                     if motor_id and value is not None:
-                        # Here you would add the logic to update the motor position
-                        print(f"Updating motor {motor_id} to position {value}")
-                        # Example: self.serial_comm.send_command(motor_id, value)
+                        # Send command to the motor using SerialCommunicator
+                        if serial_comm.send_command(motor_id, int(value)):
+                            print(f"Motor {motor_id} updated to position {value}")
+                        else:
+                            response = {
+                                "status": "error",
+                                "message": f"Failed to update motor {motor_id}"
+                            }
                     else:
                         response = {
                             "status": "error",
@@ -83,6 +112,7 @@ def main():
     except KeyboardInterrupt:
         print("\nShutting down server...")
     finally:
+        serial_comm.close_serial()
         socket.close()
         context.term()
 
