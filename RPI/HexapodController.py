@@ -190,30 +190,3 @@ class HexapodController:
             print(f"Error moving all legs: {e}")
             return None
 
-# Example usage
-if __name__ == "__main__":
-    hexapod = HexapodController()
-    
-    # Example: Set different lengths for each leg
-    hexapod.set_leg_lengths('left_front', [32.25, 44, 69.5])
-    hexapod.set_leg_lengths('right_front', [32.25, 44, 69.5])
-    # Or set the same lengths for all legs
-    hexapod.set_all_leg_lengths([32.25, 44, 69.5])
-    
-    # Add offsets for different leg groups
-    hexapod.add_angle_offsets('left_front', [5, 0, -5])
-    hexapod.add_angle_offsets('right_front', [-5, 0, 5])
-    
-    # Example targets for all legs (adjusted to be more realistic)
-    targets = {
-        'left_front': np.array([70, 20, -30]),
-        'left_center': np.array([70, 0, -30]),
-        'left_back': np.array([70, -20, -30]),
-        'right_front': np.array([70, -20, -30]),
-        'right_center': np.array([70, 0, -30]),
-        'right_back': np.array([70, 20, -30])
-    }
-    
-    print("Testing hexapod leg movements...")
-    # Move all legs to their targets
-    hexapod.move_all_legs(targets) 

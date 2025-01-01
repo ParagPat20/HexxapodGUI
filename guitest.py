@@ -24,6 +24,14 @@ class HexapodGUI:
         
         # Message queue for communication
         self.message_queue = queue.Queue()
+        self.command_queue = queue.Queue()
+        
+        # Start communication threads
+        self.comm_thread = threading.Thread(target=self.communication_handler, daemon=True)
+        self.comm_thread.start()
+        
+        self.response_thread = threading.Thread(target=self.response_handler, daemon=True)
+        self.response_thread.start()
         
         # Initialize config handler
         self.config_handler = ConfigHandler()
@@ -639,6 +647,15 @@ class HexapodGUI:
     
     def cleanup(self):
         """Cleanup resources"""
+        # Signal communication thread to exit
+        self.command_queue.put(None)
+        
+        # Wait for threads to finish
+        if hasattr(self, 'comm_thread'):
+            self.comm_thread.join(timeout=1.0)
+        if hasattr(self, 'response_thread'):
+            self.response_thread.join(timeout=1.0)
+            
         if hasattr(self, 'socket'):
             self.socket.close()
         if hasattr(self, 'context'):
@@ -648,18 +665,30 @@ class HexapodGUI:
         """Create a menu for direct motor control using sliders and value inputs"""
         motor_control_window = tk.Toplevel(self.root)
         motor_control_window.title("Motor Control")
-        motor_control_window.geometry("400x600")
+        motor_control_window.geometry("800x600")  # Increased width from 400 to 800
+        
+        # Add toggle button for continuous update
+        self.continuous_update = tk.BooleanVar(value=False)
+        toggle_frame = ttk.Frame(motor_control_window)
+        toggle_frame.pack(fill='x', padx=5, pady=5)
+        ttk.Label(toggle_frame, text="Update Mode:").pack(side='left', padx=5)
+        self.toggle_button = ttk.Checkbutton(toggle_frame, text="Continuous Update", 
+                                           variable=self.continuous_update)
+        self.toggle_button.pack(side='left', padx=5)
         
         # Create a frame for each motor group
         for leg_group, motors in self.motor_groups.items():
             frame = ttk.LabelFrame(motor_control_window, text=leg_group.replace('_', ' ').title())
             frame.pack(fill='x', padx=5, pady=5)
             
+            # Configure column weights to make slider column expandable
+            frame.columnconfigure(1, weight=3)  # Make slider column take more space
+            
             for i, (motor_id, motor_name) in enumerate(motors.items()):
-                ttk.Label(frame, text=motor_name).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+                ttk.Label(frame, text=motor_name, width=15).grid(row=i, column=0, padx=5, pady=2, sticky='w')
                 
                 # Create slider with range 0-180
-                slider = ttk.Scale(frame, from_=0, to=180, orient='horizontal')
+                slider = ttk.Scale(frame, from_=0, to=180, orient='horizontal', length=500)  # Increased length
                 slider.set(90)  # Set default position to middle
                 slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
                 
@@ -668,9 +697,9 @@ class HexapodGUI:
                 entry = ttk.Entry(frame, textvariable=value_var, width=8)
                 entry.grid(row=i, column=2, padx=5, pady=2)
                 
-                # Connect slider and entry
-                slider.configure(command=lambda v, var=value_var, e=entry, s=slider: 
-                               self._on_slider_change(s.get(), var, e))
+                # Connect slider and entry with continuous update check
+                slider.configure(command=lambda v, var=value_var, e=entry, s=slider, m_id=motor_id: 
+                               self._on_motor_slider_change(s.get(), var, e, m_id))
                 entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
                           self._on_entry_change(e, s, var, ent))
                 
@@ -678,14 +707,72 @@ class HexapodGUI:
                 ttk.Button(frame, text="Update", 
                            command=lambda m_id=motor_id, s=slider: self.update_motor(m_id, s.get())).grid(row=i, column=3, padx=5)
 
-    def update_motor(self, motor_id, value):
-        """Send command to update motor position"""
+    def _on_motor_slider_change(self, value, value_var, entry, motor_id):
+        """Handle slider value changes for motor control"""
         try:
-            # Send command to the motor via ZMQ
-            self.send_zmq_command('update_motor', {'motor_id': motor_id, 'value': value})
-            print(f"Updating motor {motor_id} to position {value}")
+            value = float(value)
+            value_var.set(f"{value:.1f}")
+            entry.delete(0, tk.END)
+            entry.insert(0, f"{value:.1f}")
+            
+            # If continuous update is enabled, update the motor immediately
+            if self.continuous_update.get():
+                self.update_motor(motor_id, value)
+        except ValueError:
+            pass
+
+    def update_motor(self, motor_id, value):
+        """Queue motor update command to be sent via communication thread"""
+        try:
+            self.command_queue.put(('update_motor', {'motor_id': motor_id, 'value': value}))
+            print(f"Queued update for motor {motor_id} to position {value}")
         except Exception as e:
-            print(f"Error updating motor {motor_id}: {e}")
+            print(f"Error queueing motor update {motor_id}: {e}")
+
+    def communication_handler(self):
+        """Handle sending commands in a separate thread"""
+        while True:
+            try:
+                command = self.command_queue.get()
+                if command is None:  # Exit signal
+                    break
+                    
+                command_type, data = command
+                message = {
+                    'type': command_type,
+                    'data': data
+                }
+                
+                self.socket.send_json(message)
+                response = self.socket.recv_json()
+                
+                if response['status'] == 'error':
+                    self.message_queue.put(f"Error: {response['message']}")
+                else:
+                    self.message_queue.put(f"Success: {response['message']}")
+                    
+            except Exception as e:
+                self.message_queue.put(f"Communication error: {e}")
+            finally:
+                self.command_queue.task_done()
+    
+    def response_handler(self):
+        """Handle receiving responses in a separate thread"""
+        while True:
+            try:
+                # Update GUI with messages from the queue
+                while not self.message_queue.empty():
+                    message = self.message_queue.get_nowait()
+                    self.text_widget.insert(tk.END, message + '\n')
+                    self.text_widget.see(tk.END)
+                    self.message_queue.task_done()
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"Response handler error: {e}")
+            
+            # Sleep briefly to prevent high CPU usage
+            time.sleep(0.05)
 
 def main():
     root = tk.Tk()
