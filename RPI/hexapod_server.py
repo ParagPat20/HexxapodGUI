@@ -52,6 +52,19 @@ def main():
                         for leg_group, offsets in data.items():
                             hexapod.add_angle_offsets(leg_group, offsets)
                 
+                elif command_type == 'update_motor':
+                    motor_id = data.get('motor_id')
+                    value = data.get('value')
+                    if motor_id and value is not None:
+                        # Here you would add the logic to update the motor position
+                        print(f"Updating motor {motor_id} to position {value}")
+                        # Example: self.serial_comm.send_command(motor_id, value)
+                    else:
+                        response = {
+                            "status": "error",
+                            "message": "Invalid motor_id or value"
+                        }
+                
                 else:
                     response = {
                         "status": "error",

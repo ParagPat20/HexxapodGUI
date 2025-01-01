@@ -258,6 +258,3 @@ class LegSimulation:
         
         self.fig.canvas.draw_idle()
 
-# Create and show the simulation
-sim = LegSimulation()
-plt.show() 

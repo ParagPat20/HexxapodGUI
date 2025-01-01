@@ -9,6 +9,8 @@ import json
 import numpy as np
 from config_handler import ConfigHandler
 from SingleLegSimulation import LegSimulation
+import matplotlib.pyplot as plt
+import math
 
 class HexapodGUI:
     def __init__(self, root):
@@ -18,7 +20,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.174.39:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.50.39:5555")  # Replace with your RPI's IP
         
         # Message queue for communication
         self.message_queue = queue.Queue()
@@ -211,13 +213,98 @@ class HexapodGUI:
     
     def create_leg_simulation(self, leg_group):
         """Create a simulation window for a specific leg"""
+        if not hasattr(self, 'simulation_window'):
+            # Create a new top-level window for simulations
+            self.simulation_window = tk.Toplevel(self.root)
+            self.simulation_window.title("Hexapod Simulation")
+            self.simulation_window.geometry("800x800")  # Adjust size as needed
+            
+            # Create a single figure with one 3D plot
+            self.simulation_figure = plt.figure(figsize=(10, 10))
+            self.ax = self.simulation_figure.add_subplot(111, projection='3d')
+            self.ax.set_title("Hexapod Leg Positions")
+            
+            # Set axis limits and labels
+            limit = 200  # Adjust based on your needs
+            self.ax.set_xlim([-limit, limit])
+            self.ax.set_ylim([-limit, limit])
+            self.ax.set_zlim([-limit, limit])
+            self.ax.set_xlabel('X')
+            self.ax.set_ylabel('Y')
+            self.ax.set_zlabel('Z')
+            
+            # Set initial view angle for better visualization
+            self.ax.view_init(elev=30, azim=45)
+            
+            # Create a canvas to embed the matplotlib figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            self.canvas = FigureCanvasTkAgg(self.simulation_figure, master=self.simulation_window)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+            
+            # Add navigation toolbar
+            from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+            toolbar = NavigationToolbar2Tk(self.canvas, self.simulation_window)
+            toolbar.update()
+            self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+            
+            # Add legend frame
+            legend_frame = ttk.LabelFrame(self.simulation_window, text="Leg Angles")
+            legend_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+            
+            # Create text widgets for each leg's angles
+            self.angle_texts = {}
+            for i, leg in enumerate(self.motor_groups.keys()):
+                label = ttk.Label(legend_frame, text=f"{leg.replace('_', ' ').title()}:",
+                                font=("Consolas", 8, "bold"))
+                label.grid(row=i//3, column=(i%3)*2, padx=5, pady=2, sticky='e')
+                
+                text = ttk.Label(legend_frame, text="θ1: 0.0°\nθ2: 0.0°\nθ3: 0.0°",
+                               font=("Consolas", 8))
+                text.grid(row=i//3, column=(i%3)*2+1, padx=5, pady=2, sticky='w')
+                self.angle_texts[leg] = text
+        
+        # Create simulation object for this leg
         sim = LegSimulation()
-        sim.fig.canvas.manager.set_window_title(f"{leg_group.replace('_', ' ').title()} Simulation")
+        sim.fig = self.simulation_figure
+        sim.ax = self.ax
+        
+        # Set initial leg lengths
+        sim.L1 = self.length_sliders[f'{leg_group}_S1'].get()
+        sim.L2 = self.length_sliders[f'{leg_group}_S2'].get()
+        sim.L3 = self.length_sliders[f'{leg_group}_S3'].get()
+        
+        # Initialize the plot with a unique color for each leg
+        colors = {
+            'left_front': '#FF0000',    # Red
+            'left_center': '#0000FF',   # Blue
+            'left_back': '#00FF00',     # Green
+            'right_front': '#FFA500',   # Orange
+            'right_center': '#800080',  # Purple
+            'right_back': '#A52A2A'     # Brown
+        }
+        
+        # Initialize the plot with proper matplotlib formatting
+        sim.leg_line, = self.ax.plot([], [], [], '-', color=colors[leg_group], linewidth=2,
+                                    label=leg_group.replace('_', ' ').title())
+        sim.target_point, = self.ax.plot([], [], [], 'o', color=colors[leg_group])
+        
+        # Add legend
+        self.ax.legend(loc='upper right')
+        
+        # Store the simulation object
         self.leg_simulations[leg_group] = sim
+        
+        # Update the simulation immediately
+        self.update_simulations()
+        
         return sim
     
     def update_simulations(self):
         """Update all leg simulations with current values"""
+        if not hasattr(self, 'simulation_window'):
+            return
+            
         for leg_group, sim in self.leg_simulations.items():
             # Update leg lengths
             sim.L1 = self.length_sliders[f'{leg_group}_S1'].get()
@@ -241,8 +328,23 @@ class HexapodGUI:
                     self.offset_sliders[f'{leg_group}_3'].get()
                 ])
                 
-                # Update simulation
-                sim.update(None)
+                # Calculate joint positions
+                points = sim.forward_kinematics(angles)
+                
+                # Update the visualization
+                sim.leg_line.set_data_3d(points[:,0], points[:,1], points[:,2])
+                sim.target_point.set_data_3d([target[0]], [target[1]], [target[2]])
+                
+                # Update angle text
+                if leg_group in self.angle_texts:
+                    angle_text = f'θ1: {math.degrees(angles[0]):.1f}°\n' \
+                               f'θ2: {math.degrees(angles[1]):.1f}°\n' \
+                               f'θ3: {math.degrees(angles[2]):.1f}°'
+                    self.angle_texts[leg_group].configure(text=angle_text)
+        
+        # Redraw the canvas
+        if hasattr(self, 'canvas'):
+            self.canvas.draw()
     
     def create_parameter_sliders(self, parent_frame, leg_group):
         """Create sliders for all parameters of a leg group"""
@@ -270,8 +372,9 @@ class HexapodGUI:
             entry = ttk.Entry(length_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
             entry.grid(row=i, column=2, padx=5, pady=2)
             
-            # Connect slider and entry
-            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            # Connect slider and entry with lambda to capture current values
+            slider.configure(command=lambda v, var=value_var, e=entry, s=slider: 
+                           self._on_slider_change(s.get(), var, e))
             entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
                       self._on_entry_change(e, s, var, ent))
         
@@ -293,8 +396,9 @@ class HexapodGUI:
             entry = ttk.Entry(target_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
             entry.grid(row=i, column=2, padx=5, pady=2)
             
-            # Connect slider and entry
-            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            # Connect slider and entry with lambda to capture current values
+            slider.configure(command=lambda v, var=value_var, e=entry, s=slider: 
+                           self._on_slider_change(s.get(), var, e))
             entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
                       self._on_entry_change(e, s, var, ent))
         
@@ -316,8 +420,9 @@ class HexapodGUI:
             entry = ttk.Entry(offset_frame, textvariable=value_var, width=8, validate='key', validatecommand=vcmd)
             entry.grid(row=i, column=2, padx=5, pady=2)
             
-            # Connect slider and entry
-            slider.configure(command=lambda v, var=value_var, e=entry: self._on_slider_change(v, var, e))
+            # Connect slider and entry with lambda to capture current values
+            slider.configure(command=lambda v, var=value_var, e=entry, s=slider: 
+                           self._on_slider_change(s.get(), var, e))
             entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
                       self._on_entry_change(e, s, var, ent))
         
@@ -341,6 +446,8 @@ class HexapodGUI:
             value_var.set(f"{value:.1f}")
             entry.delete(0, tk.END)
             entry.insert(0, f"{value:.1f}")
+            # Update simulation after slider change
+            self.update_simulations()
         except ValueError:
             pass
     
@@ -351,6 +458,8 @@ class HexapodGUI:
             if slider['from'] <= value <= slider['to']:
                 slider.set(value)
                 value_var.set(f"{value:.1f}")
+                # Update simulation after entry change
+                self.update_simulations()
             else:
                 entry.delete(0, tk.END)
                 entry.insert(0, value_var.get())
@@ -511,6 +620,10 @@ class HexapodGUI:
                                         command=self.text_widget.yview)
         monitor_scrollbar.pack(side='right', fill='y')
         self.text_widget.configure(yscrollcommand=monitor_scrollbar.set)
+        
+        # Add motor control menu button
+        ttk.Button(scrollable_frame, text="Motor Control", 
+                   command=self.create_motor_control_menu).pack(fill='x', padx=10, pady=5)
     
     def update_monitor(self):
         """Update the monitor text widget with messages from the queue"""
@@ -530,6 +643,48 @@ class HexapodGUI:
             self.socket.close()
         if hasattr(self, 'context'):
             self.context.term()
+    
+    def create_motor_control_menu(self):
+        """Create a menu for direct motor control using sliders and value inputs"""
+        motor_control_window = tk.Toplevel(self.root)
+        motor_control_window.title("Motor Control")
+        motor_control_window.geometry("400x600")
+        
+        # Create a frame for each motor group
+        for leg_group, motors in self.motor_groups.items():
+            frame = ttk.LabelFrame(motor_control_window, text=leg_group.replace('_', ' ').title())
+            frame.pack(fill='x', padx=5, pady=5)
+            
+            for i, (motor_id, motor_name) in enumerate(motors.items()):
+                ttk.Label(frame, text=motor_name).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+                
+                # Create slider
+                slider = ttk.Scale(frame, from_=-90, to=90, orient='horizontal')
+                slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
+                
+                # Create entry for direct value input
+                value_var = tk.StringVar(value="0")
+                entry = ttk.Entry(frame, textvariable=value_var, width=8)
+                entry.grid(row=i, column=2, padx=5, pady=2)
+                
+                # Connect slider and entry
+                slider.configure(command=lambda v, var=value_var, e=entry, s=slider: 
+                               self._on_slider_change(s.get(), var, e))
+                entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry: 
+                          self._on_entry_change(e, s, var, ent))
+                
+                # Add update button
+                ttk.Button(frame, text="Update", 
+                           command=lambda m_id=motor_id, s=slider: self.update_motor(m_id, s.get())).grid(row=i, column=3, padx=5)
+
+    def update_motor(self, motor_id, value):
+        """Send command to update motor position"""
+        try:
+            # Send command to the motor via ZMQ
+            self.send_zmq_command('update_motor', {'motor_id': motor_id, 'value': value})
+            print(f"Updating motor {motor_id} to position {value}")
+        except Exception as e:
+            print(f"Error updating motor {motor_id}: {e}")
 
 def main():
     root = tk.Tk()
