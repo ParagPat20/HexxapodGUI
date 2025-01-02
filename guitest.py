@@ -665,7 +665,7 @@ class HexapodGUI:
         """Create a menu for direct motor control using sliders and value inputs"""
         motor_control_window = tk.Toplevel(self.root)
         motor_control_window.title("Motor Control")
-        motor_control_window.geometry("800x600")  # Increased width from 400 to 800
+        motor_control_window.geometry("800x800")  # Increased height for DC motors
         
         # Add toggle button for continuous update
         self.continuous_update = tk.BooleanVar(value=False)
@@ -676,9 +676,17 @@ class HexapodGUI:
                                            variable=self.continuous_update)
         self.toggle_button.pack(side='left', padx=5)
         
-        # Create a frame for each motor group
+        # Create notebook for tabs
+        notebook = ttk.Notebook(motor_control_window)
+        notebook.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Servo Motors Tab
+        servo_frame = ttk.Frame(notebook)
+        notebook.add(servo_frame, text="Servo Motors")
+        
+        # Create a frame for each motor group in servo tab
         for leg_group, motors in self.motor_groups.items():
-            frame = ttk.LabelFrame(motor_control_window, text=leg_group.replace('_', ' ').title())
+            frame = ttk.LabelFrame(servo_frame, text=leg_group.replace('_', ' ').title())
             frame.pack(fill='x', padx=5, pady=5)
             
             # Configure column weights to make slider column expandable
@@ -688,7 +696,7 @@ class HexapodGUI:
                 ttk.Label(frame, text=motor_name, width=15).grid(row=i, column=0, padx=5, pady=2, sticky='w')
                 
                 # Create slider with range 0-180
-                slider = ttk.Scale(frame, from_=0, to=180, orient='horizontal', length=500)  # Increased length
+                slider = ttk.Scale(frame, from_=0, to=180, orient='horizontal', length=500)
                 slider.set(90)  # Set default position to middle
                 slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
                 
@@ -706,28 +714,94 @@ class HexapodGUI:
                 # Add update button
                 ttk.Button(frame, text="Update", 
                            command=lambda m_id=motor_id, s=slider: self.update_motor(m_id, s.get())).grid(row=i, column=3, padx=5)
+        
+        # DC Motors Tab
+        dc_frame = ttk.Frame(notebook)
+        notebook.add(dc_frame, text="DC Motors")
+        
+        # Create frame for DC motors
+        dc_motors_frame = ttk.LabelFrame(dc_frame, text="DC Motors Control")
+        dc_motors_frame.pack(fill='x', padx=5, pady=5)
+        
+        # Left DC Motor
+        left_dc_frame = ttk.Frame(dc_motors_frame)
+        left_dc_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(left_dc_frame, text="Left DC Motor", width=15).pack(side='left', padx=5)
+        left_dc_slider = ttk.Scale(left_dc_frame, from_=-255, to=255, orient='horizontal', length=500)
+        left_dc_slider.set(0)
+        left_dc_slider.pack(side='left', fill='x', expand=True, padx=5)
+        
+        left_dc_var = tk.StringVar(value="0")
+        left_dc_entry = ttk.Entry(left_dc_frame, textvariable=left_dc_var, width=8)
+        left_dc_entry.pack(side='left', padx=5)
+        
+        ttk.Button(left_dc_frame, text="Update", 
+                   command=lambda: self.update_dc_motor("LDC", left_dc_slider.get())).pack(side='left', padx=5)
+        
+        # Right DC Motor
+        right_dc_frame = ttk.Frame(dc_motors_frame)
+        right_dc_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(right_dc_frame, text="Right DC Motor", width=15).pack(side='left', padx=5)
+        right_dc_slider = ttk.Scale(right_dc_frame, from_=-255, to=255, orient='horizontal', length=500)
+        right_dc_slider.set(0)
+        right_dc_slider.pack(side='left', fill='x', expand=True, padx=5)
+        
+        right_dc_var = tk.StringVar(value="0")
+        right_dc_entry = ttk.Entry(right_dc_frame, textvariable=right_dc_var, width=8)
+        right_dc_entry.pack(side='left', padx=5)
+        
+        ttk.Button(right_dc_frame, text="Update", 
+                   command=lambda: self.update_dc_motor("RDC", right_dc_slider.get())).pack(side='left', padx=5)
+        
+        # Connect DC motor sliders and entries
+        left_dc_slider.configure(command=lambda v: self._on_dc_slider_change(v, left_dc_var, left_dc_entry, "LDC"))
+        right_dc_slider.configure(command=lambda v: self._on_dc_slider_change(v, right_dc_var, right_dc_entry, "RDC"))
+        
+        left_dc_entry.bind('<Return>', lambda e, s=left_dc_slider, var=left_dc_var, ent=left_dc_entry, m_id="LDC": 
+                          self._on_dc_entry_change(e, s, var, ent, m_id))
+        right_dc_entry.bind('<Return>', lambda e, s=right_dc_slider, var=right_dc_var, ent=right_dc_entry, m_id="RDC": 
+                          self._on_dc_entry_change(e, s, var, ent, m_id))
 
-    def _on_motor_slider_change(self, value, value_var, entry, motor_id):
-        """Handle slider value changes for motor control"""
+    def _on_dc_slider_change(self, value, value_var, entry, motor_id):
+        """Handle DC motor slider value changes"""
         try:
             value = float(value)
-            value_var.set(f"{value:.1f}")
+            value_var.set(f"{value:.0f}")
             entry.delete(0, tk.END)
-            entry.insert(0, f"{value:.1f}")
+            entry.insert(0, f"{value:.0f}")
             
             # If continuous update is enabled, update the motor immediately
             if self.continuous_update.get():
-                self.update_motor(motor_id, value)
+                self.update_dc_motor(motor_id, value)
         except ValueError:
             pass
 
-    def update_motor(self, motor_id, value):
-        """Queue motor update command to be sent via communication thread"""
+    def _on_dc_entry_change(self, event, slider, value_var, entry, motor_id):
+        """Handle DC motor entry value changes"""
         try:
-            self.command_queue.put(('update_motor', {'motor_id': motor_id, 'value': value}))
-            print(f"Queued update for motor {motor_id} to position {value}")
+            value = float(entry.get())
+            if slider['from'] <= value <= slider['to']:
+                slider.set(value)
+                value_var.set(f"{value:.0f}")
+                # Update motor if continuous update is enabled
+                if self.continuous_update.get():
+                    self.update_dc_motor(motor_id, value)
+            else:
+                entry.delete(0, tk.END)
+                entry.insert(0, value_var.get())
+        except ValueError:
+            entry.delete(0, tk.END)
+            entry.insert(0, value_var.get())
+
+    def update_dc_motor(self, motor_id, value):
+        """Update DC motor speed"""
+        try:
+            self.command_queue.put(('update_motor', {'motor_id': motor_id, 'value': int(value)}))
+            print(f"Queued update for DC motor {motor_id} to speed {value}")
         except Exception as e:
-            print(f"Error queueing motor update {motor_id}: {e}")
+            print(f"Error queueing DC motor update {motor_id}: {e}")
 
     def communication_handler(self):
         """Handle sending commands in a separate thread"""

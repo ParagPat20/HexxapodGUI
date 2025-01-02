@@ -130,17 +130,24 @@ class HexapodServer:
                 motor_id = data.get('motor_id')
                 value = data.get('value')
                 if motor_id and value is not None:
-                    # Ensure value is within 0-180 range
-                    value = max(0, min(180, float(value)))
-                    # Send command to the motor using SerialCommunicator
-                    if self.serial_comm.send_command(motor_id, int(value)):
-                        print(f"Motor {motor_id} updated to position {value}")
-                        return {"status": "success", "message": f"Motor {motor_id} updated to position {value}"}
+                    # Handle DC motor commands (LDC and RDC)
+                    if motor_id in ['LDC', 'RDC']:
+                        # Ensure value is within -255 to 255 range
+                        value = max(-255, min(255, int(value)))
+                        if self.serial_comm.send_command(motor_id, value):
+                            print(f"DC Motor {motor_id} updated to speed {value}")
+                            return {"status": "success", "message": f"DC Motor {motor_id} updated to speed {value}"}
                     else:
-                        return {
-                            "status": "error",
-                            "message": f"Failed to update motor {motor_id}"
-                        }
+                        # Handle servo motor commands
+                        value = max(0, min(180, float(value)))
+                        if self.serial_comm.send_command(motor_id, int(value)):
+                            print(f"Servo Motor {motor_id} updated to position {value}")
+                            return {"status": "success", "message": f"Servo Motor {motor_id} updated to position {value}"}
+                    
+                    return {
+                        "status": "error",
+                        "message": f"Failed to update motor {motor_id}"
+                    }
                 else:
                     return {
                         "status": "error",
