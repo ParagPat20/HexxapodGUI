@@ -11,6 +11,7 @@ from config_handler import ConfigHandler
 from SingleLegSimulation import LegSimulation
 import matplotlib.pyplot as plt
 import math
+from mpl_toolkits.mplot3d import Axes3D
 
 class HexapodGUI:
     def __init__(self, root):
@@ -107,6 +108,39 @@ class HexapodGUI:
                 "R3": "Back Leg"
             }
         }
+        
+        # Simulation variables
+        self.leg_count = 6
+        self.parameter_count = 3
+        self.kartesian = np.zeros(6)
+        self.kartesianX = np.zeros(self.leg_count)
+        self.kartesianY = np.zeros(self.leg_count)
+        self.kartesianZ = np.zeros(self.leg_count)
+        self.kartesianAngles = np.zeros(self.leg_count * self.parameter_count)
+        self.kartesian_ref = np.zeros((self.leg_count, 3))
+        self.all_angles = np.zeros((self.leg_count, self.parameter_count))
+        self.defaultLegTransform = np.array([35.74, 56.0, -40.0, 0.0, 0.0, 0.0])
+        
+        # Walking variables
+        self.walking_direction = 'none'
+        self.turn_direction = 'none'
+        self.is_walking = False
+        self.walking_mode = 1
+        self.walking_phases = np.zeros(self.leg_count)
+        self.last_timestamp = time.time()
+        
+        # Initialize reference positions
+        for i in range(self.leg_count):
+            self.kartesian_ref[i] = [self.defaultLegTransform[0], self.defaultLegTransform[1], self.defaultLegTransform[2]]
+        
+        # Simulation plot elements
+        self.ref_lines = [[] for i in range(0,7,1)]
+        self.quivers = [0 for i in range(0,25,1)]
+        self.lines = [[] for i in range(0,24,1)]
+        self.quiv_colors = ['r','g','b']
+        self.x_lim = [-200,200]
+        self.y_lim = [-200,200]
+        self.z_lim = [-200,200]
         
         # Setup UI
         self.setup_styles()
@@ -632,6 +666,10 @@ class HexapodGUI:
         # Add motor control menu button
         ttk.Button(scrollable_frame, text="Motor Control", 
                    command=self.create_motor_control_menu).pack(fill='x', padx=10, pady=5)
+        
+        # Add simulation button
+        ttk.Button(scrollable_frame, text="Open Simulation", 
+                   command=self.create_simulation_window).pack(fill='x', padx=10, pady=5)
     
     def update_monitor(self):
         """Update the monitor text widget with messages from the queue"""
@@ -847,6 +885,542 @@ class HexapodGUI:
             
             # Sleep briefly to prevent high CPU usage
             time.sleep(0.05)
+
+    def dh_transform(self, theta, s, a, alpha):
+        """Generate transform from D&H parameters"""
+        ca = np.cos(alpha)
+        sa = np.sin(alpha)
+        ct = np.cos(theta)
+        st = np.sin(theta)
+        return np.array([[ct, -st*ca, st*sa, a*ct],
+                        [st, ct*ca, -ct*sa, a*st],
+                        [0, sa, ca, s],
+                        [0, 0, 0, 1]])
+
+    def update_transforms(self):
+        """Update transforms for all legs"""
+        # transform constants based on geometry
+        x_r1 = 35.74+20.15
+        x_r2 = 37.5+28.5
+        y_r1 = 56+4.24+20.15
+        y_r1a = y_r1 - x_r1
+        x_r3 = np.sqrt(x_r1**2+x_r1**2)
+        z_r = 12.6
+        l2 = 32.25
+        l3 = 44
+        l4 = 69.5
+        a = self.kartesian[3]
+        b = self.kartesian[4]
+        g = self.kartesian[5]
+        
+        # loop over all legs
+        for i in range(len(self.leg_transforms)):
+            # origin to robot
+            self.leg_transforms[i][0] = np.array([[np.cos(g)*np.cos(b),-np.sin(g)*np.cos(a)+np.cos(g)*np.sin(b)*np.sin(a),
+                                                 np.sin(g)*np.sin(a)+np.cos(g)*np.sin(b)*np.cos(a),self.kartesian[0]],
+                                                [np.sin(g)*np.cos(b),np.cos(g)*np.cos(a)+np.sin(g)*np.sin(b)*np.sin(a),
+                                                 -np.cos(g)*np.sin(a)+np.sin(g)*np.sin(b)*np.cos(a),self.kartesian[1]],
+                                                [-np.sin(b),np.cos(b)*np.sin(a),np.cos(b)*np.cos(a),self.kartesian[2]],
+                                                [0,0,0,1]])
+            
+            # robot to joint 1
+            if i == 0:
+                t1 = self.dh_transform(np.radians(90),z_r,y_r1a,0)
+                t2 = self.dh_transform(np.radians(45),0,x_r3,0)
+                self.leg_transforms[i][1] = np.dot(t1,t2)
+            elif i == 1:
+                t1 = self.dh_transform(np.radians(90),z_r,y_r1a,0)
+                t2 = self.dh_transform(-np.radians(45),0,x_r3,0)
+                self.leg_transforms[i][1] = np.dot(t1,t2)
+            elif i == 2:
+                self.leg_transforms[i][1] = self.dh_transform(np.radians(180),z_r,x_r2,0)
+            elif i == 3:
+                self.leg_transforms[i][1] = self.dh_transform(0,z_r,x_r2,0)
+            elif i == 4:
+                t1 = self.dh_transform(-np.radians(90),z_r,y_r1a,0)
+                t2 = self.dh_transform(-np.radians(45),0,x_r3,0)
+                self.leg_transforms[i][1] = np.dot(t1,t2)
+            elif i == 5:
+                t1 = self.dh_transform(-np.radians(90),z_r,y_r1a,0)
+                t2 = self.dh_transform(np.radians(45),0,x_r3,0)
+                self.leg_transforms[i][1] = np.dot(t1,t2)
+            
+            # split by side of robot
+            if i%2 == 0:
+                # joint 1 to joint 2
+                self.leg_transforms[i][2] = self.dh_transform(-self.all_angles[i][0],0,l2,np.pi/2)
+                # joint 2 to joint 3
+                self.leg_transforms[i][3] = self.dh_transform(self.all_angles[i][1],0,l3,0)
+                # joint 3 to end
+                self.leg_transforms[i][4] = self.dh_transform(-self.all_angles[i][2],0,l4,-np.pi/2)
+            else:
+                # joint 1 to joint 2
+                self.leg_transforms[i][2] = self.dh_transform(self.all_angles[i][0],0,l2,-np.pi/2)
+                # joint 2 to joint 3
+                self.leg_transforms[i][3] = self.dh_transform(-self.all_angles[i][1],0,l3,0)
+                # joint 3 to end
+                self.leg_transforms[i][4] = self.dh_transform(self.all_angles[i][2],0,l4,np.pi/2)
+            
+            # determine sum_transforms
+            self.sum_transforms[i][0] = np.dot(self.leg_transforms[i][0],self.leg_transforms[i][1])
+            # loop over rest of sum_transforms
+            for j in range(1,len(self.sum_transforms[i])):
+                self.sum_transforms[i][j] = np.dot(self.sum_transforms[i][j-1],self.leg_transforms[i][j+1])
+
+    def initial_draw(self):
+        """Initialize the simulation visualization"""
+        if self.mode:
+            self.inverse_kinematics_4()
+        self.update_transforms()
+        
+        # Draw coordinate system origin
+        quiv_set = []
+        for i in range(3):
+            quiv_set.append(self.ax.quiver(self.leg_transforms[0][0][0,-1],
+                                         self.leg_transforms[0][0][1,-1],
+                                         self.leg_transforms[0][0][2,-1],
+                                         self.leg_transforms[0][0][i,0:3][0],
+                                         self.leg_transforms[0][0][i,0:3][1],
+                                         self.leg_transforms[0][0][i,0:3][2],
+                                         color=self.quiv_colors[i],length=25,normalize=True))
+        self.quivers[0] = quiv_set
+        
+        # Draw legs
+        colors = ["black","blue","black","blue"]
+        for i in range(len(self.sum_transforms)):
+            # First line
+            self.lines[i*len(self.sum_transforms[i])] = self.ax.plot([0,self.sum_transforms[i][0][0,-1]],
+                                                                    [0,self.sum_transforms[i][0][1,-1]],
+                                                                    [0,self.sum_transforms[i][0][2,-1]],
+                                                                    color=colors[0])[0]
+            
+            # Draw coordinate systems
+            quiv_set = []
+            for k in range(3):
+                quiv_set.append(self.ax.quiver(self.sum_transforms[i][0][0,-1],
+                                             self.sum_transforms[i][0][1,-1],
+                                             self.sum_transforms[i][0][2,-1],
+                                             self.sum_transforms[i][0][0:3,k][0],
+                                             self.sum_transforms[i][0][0:3,k][1],
+                                             self.sum_transforms[i][0][0:3,k][2],
+                                             color=self.quiv_colors[k],length=25,normalize=True))
+            self.quivers[i*len(self.sum_transforms[i])+1] = quiv_set
+            
+            # Rest of the transforms
+            for j in range(1,len(self.sum_transforms[i])):
+                self.lines[i*len(self.sum_transforms[i])+j].set_data_3d([self.sum_transforms[i][j-1][0,-1],
+                                                                          self.sum_transforms[i][j][0,-1]],
+                                                                         [self.sum_transforms[i][j-1][1,-1],
+                                                                          self.sum_transforms[i][j][1,-1]],
+                                                                         [self.sum_transforms[i][j-1][2,-1],
+                                                                          self.sum_transforms[i][j][2,-1]])
+                
+                quiv_set = []
+                for k in range(3):
+                    quiv_set.append(self.ax.quiver(self.sum_transforms[i][j][0,-1],
+                                                 self.sum_transforms[i][j][1,-1],
+                                                 self.sum_transforms[i][j][2,-1],
+                                                 self.sum_transforms[i][j][0:3,k][0],
+                                                 self.sum_transforms[i][j][0:3,k][1],
+                                                 self.sum_transforms[i][j][0:3,k][2],
+                                                 color=self.quiv_colors[k],length=25,normalize=True))
+                self.quivers[i*len(self.sum_transforms[i])+j+1] = quiv_set
+        
+        self.canvas.draw()
+        self.root.after(50, self.update_simulation)
+
+    def update_simulation(self):
+        """Update the simulation visualization"""
+        if self.mode:
+            if self.walking_mode == 1:
+                self.predefine_positions()
+                self.walking()
+            self.inverse_kinematics_4()
+        
+        self.update_transforms()
+        
+        # Update coordinate systems
+        for i in range(len(self.quivers)):
+            for j in range(len(self.quivers[i])):
+                self.quivers[i][j].remove()
+        
+        # Update origin coordinate system
+        quiv_set = []
+        for i in range(3):
+            quiv_set.append(self.ax.quiver(self.leg_transforms[0][0][0,-1],
+                                         self.leg_transforms[0][0][1,-1],
+                                         self.leg_transforms[0][0][2,-1],
+                                         self.leg_transforms[0][0][i,0:3][0],
+                                         self.leg_transforms[0][0][i,0:3][1],
+                                         self.leg_transforms[0][0][i,0:3][2],
+                                         color=self.quiv_colors[i],length=25,normalize=True))
+        self.quivers[0] = quiv_set
+        
+        # Update legs
+        for i in range(len(self.sum_transforms)):
+            self.lines[i*len(self.sum_transforms[i])].set_data_3d([self.kartesian[0],self.sum_transforms[i][0][0,-1]],
+                                                                 [self.kartesian[1],self.sum_transforms[i][0][1,-1]],
+                                                                 [self.kartesian[2],self.sum_transforms[i][0][2,-1]])
+            
+            quiv_set = []
+            for k in range(3):
+                quiv_set.append(self.ax.quiver(self.sum_transforms[i][0][0,-1],
+                                             self.sum_transforms[i][0][1,-1],
+                                             self.sum_transforms[i][0][2,-1],
+                                             self.sum_transforms[i][0][0:3,k][0],
+                                             self.sum_transforms[i][0][0:3,k][1],
+                                             self.sum_transforms[i][0][0:3,k][2],
+                                             color=self.quiv_colors[k],length=25,normalize=True))
+            self.quivers[i*len(self.sum_transforms[i])+1] = quiv_set
+            
+            for j in range(1,len(self.sum_transforms[i])):
+                self.lines[i*len(self.sum_transforms[i])+j].set_data_3d([self.sum_transforms[i][j-1][0,-1],
+                                                                       self.sum_transforms[i][j][0,-1]],
+                                                                      [self.sum_transforms[i][j-1][1,-1],
+                                                                       self.sum_transforms[i][j][1,-1]],
+                                                                      [self.sum_transforms[i][j-1][2,-1],
+                                                                       self.sum_transforms[i][j][2,-1]])
+                
+                quiv_set = []
+                for k in range(3):
+                    quiv_set.append(self.ax.quiver(self.sum_transforms[i][j][0,-1],
+                                                 self.sum_transforms[i][j][1,-1],
+                                                 self.sum_transforms[i][j][2,-1],
+                                                 self.sum_transforms[i][j][0:3,k][0],
+                                                 self.sum_transforms[i][j][0:3,k][1],
+                                                 self.sum_transforms[i][j][0:3,k][2],
+                                                 color=self.quiv_colors[k],length=25,normalize=True))
+                self.quivers[i*len(self.sum_transforms[i])+j+1] = quiv_set
+        
+        self.canvas.draw()
+        self.root.after(50, self.update_simulation)
+
+    def predefine_positions(self):
+        """Generate reference leg positions"""
+        # Constants used in calculations
+        l1m = 32.25
+        l1corr = 0.09
+        
+        # Get requested coordinates and angles
+        x = self.defaultLegTransform[0]
+        y = self.defaultLegTransform[1]
+        z = self.defaultLegTransform[2]
+        a = np.degrees(self.defaultLegTransform[3])
+        b = np.degrees(self.defaultLegTransform[4])
+        g = np.degrees(self.defaultLegTransform[5])
+        
+        # Set kartesian coordinates for all legs
+        # Leg 1 (front left)
+        atemp = np.arctan2(y, x+l1m)
+        self.kartesian_ref[0,0] = -(np.sqrt((x+l1m)**2 + y**2))*np.cos(atemp)
+        self.kartesian_ref[0,1] = (np.sqrt((x+l1m+l1corr)**2 + y**2))*np.sin(atemp)
+        
+        # Leg 2 (front right)
+        atemp = np.arctan2(y, x+l1m)
+        self.kartesian_ref[1,0] = (np.sqrt((x+l1m)**2 + y**2))*np.cos(atemp)
+        self.kartesian_ref[1,1] = (np.sqrt((x+l1m+l1corr)**2 + y**2))*np.sin(atemp)
+        
+        # Leg 3 (middle left)
+        self.kartesian_ref[2,0] = -(x+l1m)
+        self.kartesian_ref[2,1] = y
+        
+        # Leg 4 (middle right)
+        self.kartesian_ref[3,0] = x+l1m
+        self.kartesian_ref[3,1] = y
+        
+        # Leg 5 (back left)
+        atemp = np.arctan2(y, x+l1m)
+        self.kartesian_ref[4,0] = -(np.sqrt((x+l1m)**2 + y**2))*np.cos(atemp)
+        self.kartesian_ref[4,1] = (np.sqrt((x+l1m+l1corr)**2 + y**2))*np.sin(atemp)
+        
+        # Leg 6 (back right)
+        atemp = np.arctan2(y, x+l1m)
+        self.kartesian_ref[5,0] = (np.sqrt((x+l1m)**2 + y**2))*np.cos(atemp)
+        self.kartesian_ref[5,1] = (np.sqrt((x+l1m+l1corr)**2 + y**2))*np.sin(atemp)
+        
+        # Set Z coordinates
+        self.kartesian_ref[:,2] = z
+
+    def walking(self):
+        """Implement walking procedure for all legs"""
+        # Only walk if a direction is set
+        if self.walking_direction == 'none' and self.turn_direction == 'none':
+            self.is_walking = False
+            return
+            
+        # distances the leg should travel
+        y_delta = 30
+        z_delta = 30
+        
+        # Modify movement based on direction
+        if self.walking_direction == 'forward':
+            y_delta = 30
+        elif self.walking_direction == 'backward':
+            y_delta = -30
+        elif self.walking_direction == 'left':
+            # Use X movement instead of Y for sideways
+            for i in range(self.leg_count):
+                self.kartesianX[i] = self.kartesian_ref[i,0] - y_delta
+            return
+        elif self.walking_direction == 'right':
+            # Use X movement instead of Y for sideways
+            for i in range(self.leg_count):
+                self.kartesianX[i] = self.kartesian_ref[i,0] + y_delta
+            return
+            
+        if self.turn_direction == 'left':
+            self.kartesian[5] += np.radians(2)  # Rotate left
+            return
+        elif self.turn_direction == 'right':
+            self.kartesian[5] -= np.radians(2)  # Rotate right
+            return
+
+        stepsize = 5
+        step_time = 2 # cycle time for one step
+        
+        # indices of leg groups
+        indices1 = [0,3,4]
+        indices2 = [1,2,5]
+        
+        # check flag for walking
+        if not self.is_walking:
+            if self.walking_mode == 1:
+                # save timestamp for starting
+                self.last_timestamp = time.time()
+                # program start, time to set flags
+                for i in range(len(indices1)):
+                    self.walking_phases[indices1[i]] = step_time/2
+                    self.walking_phases[indices2[i]] = step_time/2
+            # set flag for walking
+            self.is_walking = True
+            
+        if self.walking_mode == 1:
+            # determine time since last loop
+            current_timestamp = time.time()
+            time_delay = current_timestamp - self.last_timestamp
+            # assign last timestamp
+            self.last_timestamp = current_timestamp
+            # add time_delay to walking phases
+            self.walking_phases += time_delay
+            # loop over indices
+            for i in range(len(indices1)):
+                # check if phase is longer than step_time
+                if self.walking_phases[indices1[i]] > step_time:
+                    self.walking_phases[indices1[i]] -= step_time
+                # check for first leg set if first or second phase is reached
+                if self.walking_phases[indices1[i]] < step_time/2:
+                    # use first equations for current positions
+                    self.kartesianY[indices1[i]] = self.kartesian_ref[indices1[i],1] + y_delta*(4*self.walking_phases[indices1[i]]/step_time-1)
+                    self.kartesianZ[indices1[i]] = self.kartesian_ref[indices1[i],2] + z_delta*np.sin(2*np.pi/step_time*self.walking_phases[indices1[i]])
+                elif self.walking_phases[indices1[i]] <= step_time:
+                    self.kartesianY[indices1[i]] = self.kartesian_ref[indices1[i],1] + y_delta*(3-4*self.walking_phases[indices1[i]]/step_time)
+                    # kartesianZ[indices1[i]] += 0
+                # check for second leg set if first or second phase is reached
+                if self.walking_phases[indices2[i]] > step_time:
+                    self.walking_phases[indices2[i]] -= step_time
+                if self.walking_phases[indices2[i]] < step_time/2:
+                    # use first equations for current positions
+                    self.kartesianY[indices2[i]] = self.kartesian_ref[indices1[i],1] + y_delta*(1-4*self.walking_phases[indices2[i]]/step_time)
+                    # kartesianZ[indices1[i]] += 0
+                elif self.walking_phases[indices2[i]] <= step_time:
+                    self.kartesianY[indices2[i]] = self.kartesian_ref[indices1[i],1] + y_delta*(4*self.walking_phases[indices2[i]]/step_time-3)
+                    self.kartesianZ[indices2[i]] = self.kartesian_ref[indices1[i],2] + z_delta*np.sin(2*np.pi/step_time*(self.walking_phases[indices2[i]]-step_time/2))
+
+    def inverse_kinematics_4(self):
+        """Implement inverse kinematics for walking"""
+        # constants used in the calculations
+        y0 = 56+4.24
+        x0 = 31.5
+        x1 = 35.74
+        l1m = 32.25
+        l0m = 28.5
+        l0o = 20.15
+        l1corr = 0.09
+        l2 = 44
+        l3 = 69.5
+        
+        # check if walking is disabled, otherwise kartesianXYZ are already set
+        if not self.is_walking:
+            # get requested coordinates and angles first
+            x1 = self.defaultLegTransform[0]+self.kartesian[0]
+            x2 = self.defaultLegTransform[0]-self.kartesian[0]
+            y = self.defaultLegTransform[1]-self.kartesian[1]
+            z = self.defaultLegTransform[2]-self.kartesian[2]
+            a = np.degrees(self.defaultLegTransform[3]+self.kartesian[3])
+            b = np.degrees(self.defaultLegTransform[4]+self.kartesian[4])
+            g = np.degrees(self.defaultLegTransform[5]+self.kartesian[5])
+            
+            # set supposed kartesian coordinates for all legs
+            # -------------leg 1-------------
+            atemp = np.arctan2(y,x1+l1m)
+            self.kartesianX[0] = -(np.sqrt((x1+l1m)**2+y**2))*np.cos(atemp)
+            self.kartesianY[0] = (np.sqrt((x1+l1m+l1corr)**2+y**2))*np.sin(atemp)
+            # -------------leg 2-------------
+            atemp = np.arctan2(y,x2+l1m)
+            self.kartesianX[1] = (np.sqrt((x2+l1m)**2+y**2))*np.cos(atemp)
+            self.kartesianY[1] = (np.sqrt((x2+l1m+l1corr)**2+y**2))*np.sin(atemp)
+            # -------------leg 3-------------
+            self.kartesianX[2] = -(x1+l1m)
+            self.kartesianY[2] = y
+            # -------------leg 4-------------
+            self.kartesianX[3] = x2+l1m
+            self.kartesianY[3] = y
+            # -------------leg 5-------------
+            atemp = np.arctan2(y,x1+l1m)
+            self.kartesianX[4] = -(np.sqrt((x1+l1m)**2+y**2))*np.cos(atemp)
+            self.kartesianY[4] = (np.sqrt((x1+l1m+l1corr)**2+y**2))*np.sin(atemp)
+            # -------------leg 6-------------
+            atemp = np.arctan2(y,x2+l1m)
+            self.kartesianX[5] = (np.sqrt((x2+l1m)**2+y**2))*np.cos(atemp)
+            self.kartesianY[5] = (np.sqrt((x2+l1m+l1corr)**2+y**2))*np.sin(atemp)
+            # -------------z-------------
+            self.kartesianZ[0] = z
+            self.kartesianZ[1] = z
+            self.kartesianZ[2] = z
+            self.kartesianZ[3] = z
+            self.kartesianZ[4] = z
+            self.kartesianZ[5] = z
+            
+            # Apply rotations
+            # -------------------1. yaw-----------------------
+            # front servos
+            dy = (y0+l0o)*(1-np.cos(np.radians(a)))
+            dz = (y0+l0o)*np.sin(np.radians(a))
+            self.kartesianY[0] -= dy
+            self.kartesianZ[0] -= dz
+            self.kartesianY[1] -= dy
+            self.kartesianZ[1] -= dz
+            # back servos
+            self.kartesianY[4] += dy
+            self.kartesianZ[4] += dz
+            self.kartesianY[5] += dy
+            self.kartesianZ[5] += dz
+            
+            # -------------------2. pitch---------------------
+            # front and back servos
+            dx = 2*(x1+l0o)*(1-np.cos(np.radians(b)))
+            dz = 2*(x1+l0o)*np.sin(np.radians(b))
+            self.kartesianX[0] += dx
+            self.kartesianZ[0] -= dz
+            self.kartesianX[1] -= dx
+            self.kartesianZ[1] += dz
+            self.kartesianX[4] += dx
+            self.kartesianZ[4] -= dz
+            self.kartesianX[5] -= dx
+            self.kartesianZ[5] += dz
+            # middle servos
+            dx = 2*(x0+l0m)*(1-np.cos(np.radians(b)))
+            dz = 2*(x0+l0m)*np.sin(np.radians(b))
+            self.kartesianX[2] += dx
+            self.kartesianZ[2] -= dz
+            self.kartesianX[3] -= dx
+            self.kartesianZ[3] += dz
+            
+            # -------------------3. roll----------------------
+            # front servos
+            g0 = np.degrees(np.arctan((y0+l0o)/(x1+l0o)))
+            dx = 1.25*np.sqrt((y0+l0o)**2+(x1+l0o)**2)*np.sin(np.radians(g0+g))
+            dy = 1.25*np.sqrt((y0+l0o)**2+(x1+l0o)**2)*np.sin(np.radians(g0+g))
+            self.kartesianX[0] += dx
+            self.kartesianY[0] += dy
+            self.kartesianX[1] += dx
+            self.kartesianY[1] -= dy
+            # middle servos
+            comp_fac = (l2+l3+l0m)/(x0+l0m)
+            dy = comp_fac*(x0+l0m)*np.sin(np.radians(g))
+            dx = comp_fac*(x0+l0m)*(1-np.cos(np.radians(g)))
+            self.kartesianX[2] += dx
+            self.kartesianY[2] += dy
+            self.kartesianX[3] -= dx
+            self.kartesianY[3] -= dy
+            # back servos
+            dx = np.sqrt((y0+l0o)**2+(x1+l0o)**2)*np.sin(np.radians(g0+g))
+            dy = np.sqrt((y0+l0o)**2+(x1+l0o)**2)*np.sin(np.radians(g0+g))
+            self.kartesianX[4] -= dx
+            self.kartesianY[4] += dy
+            self.kartesianX[5] -= dx
+            self.kartesianY[5] -= dy
+        
+        # Calculate angles for each leg
+        for i in range(self.leg_count):
+            # Calculate intermediate values
+            x1 = np.sqrt(self.kartesianX[i]**2 + self.kartesianY[i]**2)
+            a1 = np.arcsin(self.kartesianY[i]/x1)
+            x2 = np.sqrt((x1-l1m)**2 + self.kartesianZ[i]**2)
+            
+            try:
+                a2 = np.arccos((l2**2 + l3**2 - x2**2)/(2*l2*l3))
+                b1 = np.arccos((l2**2 + x2**2 - l3**2)/(2*l2*x2))
+                g1 = np.arcsin(self.kartesianZ[i]/x2)
+                b2 = b1 + g1
+                
+                # Convert to degrees and store
+                if i == 0:  # front left
+                    self.kartesianAngles[0] = np.degrees(a1) - 45
+                    self.kartesianAngles[1] = np.degrees(b2)
+                    self.kartesianAngles[2] = 180 - np.degrees(a2)
+                elif i == 1:  # front right
+                    self.kartesianAngles[3] = np.degrees(a1) - 45
+                    self.kartesianAngles[4] = np.degrees(b2)
+                    self.kartesianAngles[5] = 180 - np.degrees(a2)
+                elif i == 2:  # middle left
+                    self.kartesianAngles[6] = np.degrees(a1)
+                    self.kartesianAngles[7] = np.degrees(b2)
+                    self.kartesianAngles[8] = 180 - np.degrees(a2)
+                elif i == 3:  # middle right
+                    self.kartesianAngles[9] = np.degrees(a1)
+                    self.kartesianAngles[10] = np.degrees(b2)
+                    self.kartesianAngles[11] = 180 - np.degrees(a2)
+                elif i == 4:  # back left
+                    self.kartesianAngles[12] = np.degrees(a1) + 45
+                    self.kartesianAngles[13] = np.degrees(b2)
+                    self.kartesianAngles[14] = 180 - np.degrees(a2)
+                elif i == 5:  # back right
+                    self.kartesianAngles[15] = np.degrees(a1) + 45
+                    self.kartesianAngles[16] = np.degrees(b2)
+                    self.kartesianAngles[17] = 180 - np.degrees(a2)
+            except:
+                print(f"Inverse kinematics failed for leg {i}")
+                continue
+        
+        # Transfer angles to all_angles array
+        for i in range(len(self.all_angles)):
+            for j in range(len(self.all_angles[i])):
+                self.all_angles[i][j] = np.radians(self.kartesianAngles[i*len(self.all_angles[i])+j])
+
+    def create_simulation_window(self):
+        """Create 3D simulation window"""
+        if not hasattr(self, 'simulation_window'):
+            self.simulation_window = tk.Toplevel(self.root)
+            self.simulation_window.title("Hexapod Simulation")
+            self.simulation_window.geometry("800x800")
+
+            # Create matplotlib figure
+            self.simulation_figure = plt.figure(figsize=(10, 10))
+            self.ax = self.simulation_figure.add_subplot(111, projection='3d')
+            self.ax.set_title("Hexapod Simulation")
+
+            # Set axis limits and labels
+            self.ax.set_xlim(self.x_lim)
+            self.ax.set_ylim(self.y_lim)
+            self.ax.set_zlim(self.z_lim)
+            self.ax.set_xlabel("X")
+            self.ax.set_ylabel("Y")
+            self.ax.set_zlabel("Z")
+
+            # Create canvas
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+            self.canvas = FigureCanvasTkAgg(self.simulation_figure, master=self.simulation_window)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
+
+            # Add toolbar
+            toolbar = NavigationToolbar2Tk(self.canvas, self.simulation_window)
+            toolbar.update()
+
+            # Initialize simulation
+            self.initial_draw()
+            self.start_simulation_update()
 
 def main():
     root = tk.Tk()
