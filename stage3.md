@@ -61,22 +61,84 @@ Key innovations include:
 ## 3. Mechanical Design
 
 ### 3.1 Frame Structure
-- Dual circular aluminum end plates
-- Central aluminum rod for structural integrity
-- Integrated gear system for rolling mechanism
-- Modular leg design with quick-connect features
+- Dual Circular End Plates:
+  * Blue-coated aluminum outer plates with precision-cut segments
+  * White inner plates with integrated mounting points
+  * Green and white accent sections for visual identification
+  * Multiple mounting holes for leg assemblies and components
+- Central Electronics Housing:
+  * Two-tier design for component separation
+  * Upper tier housing Raspberry Pi with USB and network ports
+  * Lower tier containing power management and motor drivers
+  * Structured cable management system
+- Structural Integration:
+  * Central aluminum rod providing core stability
+  * Multiple intermediate plates for component mounting
+  * Precision-aligned bearing housings
+  * Integrated cooling vents in plates
 
 ### 3.2 Drive Mechanism
-- Outer disk gear system for rolling
-- Servo-driven leg articulation
-- Precision bearings for smooth motion
-- Slip ring for continuous power transfer
+- Rolling System:
+  * Large diameter outer rings with internal gear teeth
+  * Precision-machined spur gears for power transmission
+  * Dual DC motor drive system
+  * Synchronized rotation control
+- Leg Actuation:
+  * Six modular leg assemblies
+  * Dual servo configuration per leg
+  * Quick-disconnect mounting system
+  * Integrated limit switches
+- Power Transfer:
+  * Central slip ring assembly for continuous rotation
+  * Multi-channel power and signal routing
+  * Sealed bearing assemblies at both ends
+  * Redundant power distribution paths
 
 ### 3.3 Transformation System
-- Coordinated leg retraction mechanism
-- Synchronized disk rotation
-- Stable center of gravity maintenance
-- Emergency stop capability
+- Leg Integration:
+  * Symmetrical leg placement around outer disks
+  * Precision-engineered folding mechanism
+  * Spring-loaded deployment system
+  * Position feedback sensors
+- Disk Mechanism:
+  * Synchronized outer disk rotation
+  * Internal gear teeth for drive engagement
+  * Balanced weight distribution
+  * Emergency release mechanism
+- Motion Control:
+  * Coordinated servo movement for transformation
+  * Position-sensing feedback loop
+  * Automatic alignment system
+  * Fail-safe locking mechanism
+
+### 3.4 Component Layout
+- Central Section:
+  * Two-layer PCB mounting system
+  * Accessible maintenance ports
+  * Thermal management channels
+  * Modular component organization
+- Power Distribution:
+  * Centralized battery compartment
+  * Voltage regulation modules
+  * Current monitoring systems
+  * Emergency power cutoff
+- Sensor Integration:
+  * Strategic sensor placement points
+  * Protected cable routing channels
+  * Calibration reference markers
+  * Modular sensor mounting system
+
+### 3.5 Materials and Finish
+- Primary Structure:
+  * Blue anodized aluminum outer plates
+  * White powder-coated inner components
+  * Green accent elements for visual guides
+  * High-grade stainless steel fasteners
+- Precision Components:
+  * CNC-machined aluminum parts
+  * Industrial-grade bearings
+  * Hardened steel gears
+  * High-impact plastic covers
 
 ## 4. Working Methodology
 
@@ -115,16 +177,38 @@ Key innovations include:
 ## 6. Manufacturing Details
 
 ### 6.1 Materials Used
-- Aluminum frame components
-- 3D printed auxiliary parts
-- High-grade bearings and gears
-- Custom PCB fabrication
+- Aluminum Components:
+  * 6061-T6 aluminum for main plates
+  * Custom anodized finish in blue
+  * Precision-machined gear teeth
+  * Surface treated for durability
+- Mechanical Components:
+  * High-precision bearings rated for continuous rotation
+  * Hardened steel gears for drive system
+  * Custom-designed slip rings
+  * Industrial-grade servo motors
+- Electronic Integration:
+  * Custom-designed PCB layouts
+  * Shielded cable assemblies
+  * Temperature-resistant connectors
+  * Vibration-isolated mounting systems
 
 ### 6.2 Assembly Process
-- Modular component assembly
-- Precision alignment procedures
-- Quality control checkpoints
-- Testing and calibration
+- Precision Assembly:
+  * Computer-aided alignment procedures
+  * Torque-controlled fastening
+  * Calibrated gear mesh setting
+  * Bearing preload adjustment
+- Quality Control:
+  * Digital measurement verification
+  * Motion smoothness testing
+  * Power system validation
+  * Sensor calibration procedures
+- Integration Testing:
+  * Systematic component testing
+  * Full motion range verification
+  * Power consumption monitoring
+  * Communication system validation
 
 ## 7. Electronic Components
 
