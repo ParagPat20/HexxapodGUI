@@ -39,18 +39,21 @@ class HexapodGUI:
         
         # Default values
         self.DEFAULT_LEG_LENGTHS = {
-            'S1': 32.25,
-            'S2': 44,
-            'S3': 69.5
+            'left_front': {'S1': 30, 'S2': 80, 'S3': 240},
+            'left_center': {'S1': 30, 'S2': 130, 'S3': 240},
+            'left_back': {'S1': 30, 'S2': 80, 'S3': 240},
+            'right_front': {'S1': 30, 'S2': 80, 'S3': 240},
+            'right_center': {'S1': 30, 'S2': 130, 'S3': 240},
+            'right_back': {'S1': 30, 'S2': 80, 'S3': 240}
         }
         
         self.DEFAULT_LEG_TARGETS = {
-            'left_front': {'x': 70, 'y': 20, 'z': -30},
-            'left_center': {'x': 70, 'y': 0, 'z': -30},
-            'left_back': {'x': 70, 'y': -20, 'z': -30},
-            'right_front': {'x': 70, 'y': -20, 'z': -30},
-            'right_center': {'x': 70, 'y': 0, 'z': -30},
-            'right_back': {'x': 70, 'y': 20, 'z': -30}
+            'left_front': {'x': 200, 'y': 100, 'z': -150},
+            'left_center': {'x': 200, 'y': 0, 'z': -150},
+            'left_back': {'x': 200, 'y': -100, 'z': -150},
+            'right_front': {'x': -200, 'y': 100, 'z': -150},    
+            'right_center': {'x': -200, 'y': 0, 'z': -150},
+            'right_back': {'x': -200, 'y': -100, 'z': -150}     
         }
         
         self.DEFAULT_SERVO_OFFSETS = {
@@ -119,7 +122,7 @@ class HexapodGUI:
         self.kartesianAngles = np.zeros(self.leg_count * self.parameter_count)
         self.kartesian_ref = np.zeros((self.leg_count, 3))
         self.all_angles = np.zeros((self.leg_count, self.parameter_count))
-        self.defaultLegTransform = np.array([35.74, 56.0, -40.0, 0.0, 0.0, 0.0])
+        self.defaultLegTransform = np.array([200.0, 100.0, -150.0, 0.0, 0.0, 0.0])
         
         # Walking variables
         self.walking_direction = 'none'
@@ -146,6 +149,9 @@ class HexapodGUI:
         self.setup_styles()
         self.create_gui()
         self.start_monitor()
+        
+        # Setup keyboard controls
+        self.setup_keyboard_controls()
     
     def setup_styles(self):
         """Configure ttk styles"""
@@ -404,8 +410,8 @@ class HexapodGUI:
             ttk.Label(length_frame, text=f"Length {segment}").grid(row=i, column=0, padx=5, pady=2)
             
             # Create slider
-            slider = ttk.Scale(length_frame, from_=0, to=100, orient='horizontal')
-            slider.set(self.leg_lengths[segment])
+            slider = ttk.Scale(length_frame, from_=0, to=300, orient='horizontal')  # Increased maximum to 300mm
+            slider.set(self.leg_lengths[leg_group][segment])  # Updated to use new structure
             slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
             self.length_sliders[f'{leg_group}_{segment}'] = slider
             
@@ -427,8 +433,8 @@ class HexapodGUI:
         for i, axis in enumerate(['x', 'y', 'z']):
             ttk.Label(target_frame, text=f"{axis.upper()} Position").grid(row=i, column=0, padx=5, pady=2)
             
-            # Create slider
-            slider = ttk.Scale(target_frame, from_=-200, to=200, orient='horizontal')
+            # Create slider with increased range
+            slider = ttk.Scale(target_frame, from_=-300, to=300, orient='horizontal')  # Increased range to ±300mm
             slider.set(self.leg_targets[leg_group][axis])
             slider.grid(row=i, column=1, padx=5, pady=2, sticky='ew')
             self.target_sliders[f'{leg_group}_{axis}'] = slider
@@ -663,13 +669,16 @@ class HexapodGUI:
         monitor_scrollbar.pack(side='right', fill='y')
         self.text_widget.configure(yscrollcommand=monitor_scrollbar.set)
         
-        # Add motor control menu button
-        ttk.Button(scrollable_frame, text="Motor Control", 
-                   command=self.create_motor_control_menu).pack(fill='x', padx=10, pady=5)
+        # Add control menu buttons
+        menu_frame = ttk.Frame(scrollable_frame)
+        menu_frame.pack(fill='x', padx=10, pady=5)
         
-        # Add simulation button
-        ttk.Button(scrollable_frame, text="Open Simulation", 
-                   command=self.create_simulation_window).pack(fill='x', padx=10, pady=5)
+        ttk.Button(menu_frame, text="Motor Control", 
+                   command=self.create_motor_control_menu).pack(side='left', padx=5)
+        ttk.Button(menu_frame, text="Movement Control", 
+                   command=self.create_movement_control_panel).pack(side='left', padx=5)
+        ttk.Button(menu_frame, text="Open Simulation", 
+                   command=self.create_simulation_window).pack(side='left', padx=5)
     
     def update_monitor(self):
         """Update the monitor text widget with messages from the queue"""
@@ -812,7 +821,7 @@ class HexapodGUI:
             
             # If continuous update is enabled, update the motor immediately
             if self.continuous_update.get():
-                self.update_dc_motor(motor_id, value)
+                self.update_motor(motor_id, value)
         except ValueError:
             pass
 
@@ -825,7 +834,7 @@ class HexapodGUI:
                 value_var.set(f"{value:.0f}")
                 # Update motor if continuous update is enabled
                 if self.continuous_update.get():
-                    self.update_dc_motor(motor_id, value)
+                    self.update_motor(motor_id, value)
             else:
                 entry.delete(0, tk.END)
                 entry.insert(0, value_var.get())
@@ -1421,6 +1430,107 @@ class HexapodGUI:
             # Initialize simulation
             self.initial_draw()
             self.start_simulation_update()
+
+    def _on_motor_slider_change(self, value, value_var, entry, motor_id):
+        """Handle slider value changes for motor control"""
+        try:
+            value = float(value)
+            value_var.set(f"{value:.1f}")
+            entry.delete(0, tk.END)
+            entry.insert(0, f"{value:.1f}")
+            
+            # If continuous update is enabled, update the motor immediately
+            if self.continuous_update.get():
+                self.update_motor(motor_id, value)
+        except ValueError:
+            pass
+
+    def setup_keyboard_controls(self):
+        """Setup keyboard controls for movement"""
+        self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
+        self.root.bind('<KeyPress-s>', lambda e: self.handle_movement('backward'))
+        self.root.bind('<KeyPress-a>', lambda e: self.handle_movement('left'))
+        self.root.bind('<KeyPress-d>', lambda e: self.handle_movement('right'))
+        self.root.bind('<KeyPress-q>', lambda e: self.handle_movement('turn_left'))
+        self.root.bind('<KeyPress-e>', lambda e: self.handle_movement('turn_right'))
+        self.root.bind('<KeyPress-space>', lambda e: self.handle_movement('stop'))
+        
+        # Add key release handlers to stop movement
+        self.root.bind('<KeyRelease-w>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-s>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-a>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-d>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-q>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-e>', lambda e: self.handle_movement('stop'))
+
+    def handle_movement(self, direction):
+        """Handle movement commands"""
+        try:
+            if direction == 'forward':
+                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': 200, 'type': 'dc'}))
+                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 200, 'type': 'dc'}))
+            elif direction == 'backward':
+                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': -200, 'type': 'dc'}))
+                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': -200, 'type': 'dc'}))
+            elif direction == 'stop':
+                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': 0, 'type': 'dc'}))
+                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 0, 'type': 'dc'}))
+        except Exception as e:
+            self.message_queue.put(f"Error in movement control: {e}")
+
+    def create_movement_control_panel(self):
+        """Create a panel for movement controls"""
+        movement_window = tk.Toplevel(self.root)
+        movement_window.title("Movement Controls")
+        movement_window.geometry("400x300")
+        
+        # Speed control
+        speed_frame = ttk.LabelFrame(movement_window, text="Walking Speed")
+        speed_frame.pack(fill='x', padx=5, pady=5)
+        
+        self.speed_slider = ttk.Scale(speed_frame, from_=0.1, to=2.0, orient='horizontal')
+        self.speed_slider.set(1.0)
+        self.speed_slider.pack(fill='x', padx=5, pady=5)
+        
+        # Movement buttons
+        control_frame = ttk.LabelFrame(movement_window, text="Movement Controls")
+        control_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Configure grid
+        for i in range(3):
+            control_frame.grid_columnconfigure(i, weight=1)
+        for i in range(3):
+            control_frame.grid_rowconfigure(i, weight=1)
+        
+        # Create movement buttons
+        ttk.Button(control_frame, text="↰", 
+                   command=lambda: self.handle_movement('turn_left')).grid(row=0, column=0, padx=2, pady=2, sticky='nsew')
+        ttk.Button(control_frame, text="↑", 
+                   command=lambda: self.handle_movement('forward')).grid(row=0, column=1, padx=2, pady=2, sticky='nsew')
+        ttk.Button(control_frame, text="↱", 
+                   command=lambda: self.handle_movement('turn_right')).grid(row=0, column=2, padx=2, pady=2, sticky='nsew')
+        
+        ttk.Button(control_frame, text="←", 
+                   command=lambda: self.handle_movement('left')).grid(row=1, column=0, padx=2, pady=2, sticky='nsew')
+        ttk.Button(control_frame, text="□", 
+                   command=lambda: self.handle_movement('stop')).grid(row=1, column=1, padx=2, pady=2, sticky='nsew')
+        ttk.Button(control_frame, text="→", 
+                   command=lambda: self.handle_movement('right')).grid(row=1, column=2, padx=2, pady=2, sticky='nsew')
+        
+        ttk.Button(control_frame, text="↲", 
+                   command=lambda: self.handle_movement('backward')).grid(row=2, column=1, padx=2, pady=2, sticky='nsew')
+        
+        # Add keyboard control instructions
+        instruction_frame = ttk.LabelFrame(movement_window, text="Keyboard Controls")
+        instruction_frame.pack(fill='x', padx=5, pady=5)
+        
+        instructions = """
+        W - Forward    S - Backward
+        A - Left      D - Right
+        Q - Turn Left E - Turn Right
+        Space - Stop
+        """
+        ttk.Label(instruction_frame, text=instructions, justify='left').pack(padx=5, pady=5)
 
 def main():
     root = tk.Tk()

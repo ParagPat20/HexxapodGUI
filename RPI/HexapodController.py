@@ -6,12 +6,12 @@ class HexapodController:
     def __init__(self):
         # Default leg lengths for each leg group
         self.leg_lengths = {
-            'left_front': {'S1': 32.25, 'S2': 44, 'S3': 69.5},
-            'left_center': {'S1': 32.25, 'S2': 44, 'S3': 69.5},
-            'left_back': {'S1': 32.25, 'S2': 44, 'S3': 69.5},
-            'right_front': {'S1': 32.25, 'S2': 44, 'S3': 69.5},
-            'right_center': {'S1': 32.25, 'S2': 44, 'S3': 69.5},
-            'right_back': {'S1': 32.25, 'S2': 44, 'S3': 69.5}
+            'left_front': {'S1': 30, 'S2': 80, 'S3': 240},
+            'left_center': {'S1': 30, 'S2': 130, 'S3': 240},
+            'left_back': {'S1': 30, 'S2': 80, 'S3': 240},
+            'right_front': {'S1': 30, 'S2': 80, 'S3': 240},
+            'right_center': {'S1': 30, 'S2': 130, 'S3': 240},
+            'right_back': {'S1': 30, 'S2': 80, 'S3': 240}
         }
         
         # Motor grouping
