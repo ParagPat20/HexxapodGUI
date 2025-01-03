@@ -31,6 +31,44 @@ class HexapodGUI:
         self.config_handler = ConfigHandler()
         self.motor_values = self.config_handler.load_config()
         
+        # Create serial monitor
+        self.create_serial_monitor()
+        
+        # Define standby angles for stable standing position
+        self.standby_angles = {
+            # Left Front Leg
+            'L1': 90,   # Hip centered
+            'L2': 135,  # Knee bent for stability
+            'L3': 45,   # Ankle angled for ground contact
+            
+            # Left Center Leg
+            'L5': 90,   # Hip centered
+            'L6': 135,  # Knee bent
+            'L7': 45,   # Ankle angled
+            'L8': 90,   # Extra joint centered
+            
+            # Left Back Leg
+            'L9': 90,   # Hip centered
+            'L10': 135, # Knee bent
+            'L12': 45,  # Ankle angled
+            
+            # Right Front Leg
+            'R14': 135, # Knee bent
+            'R15': 90,  # Hip centered
+            'R16': 45,  # Ankle angled
+            
+            # Right Center Leg
+            'R6': 90,   # Hip centered
+            'R8': 45,   # Ankle angled
+            'R10': 135, # Knee bent
+            'R12': 90,  # Extra joint centered
+            
+            # Right Back Leg
+            'R1': 135,  # Knee bent
+            'R2': 90,   # Hip centered
+            'R3': 45    # Ankle angled
+        }
+        
         # Motor grouping
         self.motor_groups = {
             'left_front': {
@@ -211,18 +249,28 @@ class HexapodGUI:
                                 validate='key', validatecommand=vcmd)
                 entry.pack(side='left', padx=5)
                 
+                # Add offset entry
+                offset_var = tk.StringVar(value=str(self.motor_values['offsets'].get(motor_id, 0)))
+                ttk.Label(motor_frame, text="Offset:").pack(side='left', padx=2)
+                offset_entry = ttk.Entry(motor_frame, textvariable=offset_var, width=5,
+                                       validate='key', validatecommand=vcmd)
+                offset_entry.pack(side='left', padx=2)
+                
                 # Add update button
                 ttk.Button(motor_frame, text="Update",
-                          command=lambda m=motor_id, s=slider: self.update_servo(m, s.get())).pack(side='left', padx=5)
+                          command=lambda m=motor_id, s=slider, o=offset_var: 
+                          self.update_servo_with_offset(m, s.get(), o.get())).pack(side='left', padx=5)
                 
                 # Connect slider and entry
-                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
+                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id, o=offset_var: 
                                self._on_servo_slider_change(v, var, e, m))
-                slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider: 
-                          self.update_servo(m, float(s.get())))
-                entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id: 
+                slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider, o=offset_var: 
+                          self.update_servo_with_offset(m, float(s.get()), o.get()))
+                entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id, o=offset_var: 
                           self._on_servo_entry_change(e, s, var, ent, m))
-    
+                offset_entry.bind('<Return>', lambda e, m=motor_id, s=slider, o=offset_var:
+                                self.update_offset(m, o.get()))
+
     def _on_servo_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for servo control"""
         try:
@@ -306,7 +354,7 @@ class HexapodGUI:
             try:
                 if not self.message_queue.empty():
                     message = self.message_queue.get()
-                    print(f"Response: {message}")
+                    self.add_to_monitor(message)
                 time.sleep(0.01)
             except Exception as e:
                 print(f"Response handler error: {e}")
@@ -351,6 +399,10 @@ class HexapodGUI:
         control_frame = ttk.LabelFrame(parent, text="Movement Controls")
         control_frame.pack(fill='x', padx=10, pady=5)
         
+        # Add standby button
+        standby_button = ttk.Button(control_frame, text="Standby Position", command=self.enter_standby)
+        standby_button.pack(pady=5)
+        
         # Add walking control button
         walk_button = ttk.Button(control_frame, text="Start Walking", command=self.toggle_walking)
         walk_button.pack(pady=5)
@@ -361,6 +413,27 @@ class HexapodGUI:
         ttk.Label(control_frame, text="W: Forward\nS: Backward\nA: Turn Left\nD: Turn Right\nSpace: Stop",
                  justify='left').pack(padx=10, pady=5)
 
+    def enter_standby(self):
+        """Put hexapod in standby position with offsets"""
+        self.message_queue.put("Entering standby position...")
+        for motor_id, angle in self.standby_angles.items():
+            # Apply offset to standby position
+            offset = self.motor_values['offsets'].get(motor_id, 0)
+            adjusted_angle = angle + offset
+            # Ensure the adjusted value is within valid range
+            adjusted_angle = max(0, min(180, adjusted_angle))
+            self.command_queue.put(('update_motor', {
+                'motor_id': motor_id,
+                'value': adjusted_angle
+            }))
+            # Save the base standby value and keep the offset
+            self.motor_values['servo_motors'][motor_id] = angle
+            self.motor_values['offsets'][motor_id] = offset
+        
+        # Save the updated configuration
+        self.config_handler.save_config(self.motor_values)
+        self.message_queue.put("Standby position reached")
+
     def toggle_walking(self):
         """Toggle walking sequence"""
         self.is_walking = not self.is_walking
@@ -370,74 +443,178 @@ class HexapodGUI:
             self.walking_thread.start()
         else:
             self.walk_button.configure(text="Start Walking")
+            # Return to standby position when stopping
+            self.enter_standby()
 
     def walking_sequence(self):
         """Execute walking sequence"""
+        # Default angles for each motor
+        default_angles = {
+            # Left Front Leg
+            'L1': 90,  # Hip
+            'L2': 120, # Knee
+            'L3': 90,  # Ankle
+            
+            # Left Center Leg
+            'L5': 90,  # Hip
+            'L6': 120, # Knee
+            'L7': 90,  # Ankle
+            'L8': 90,  # Extra joint
+            
+            # Left Back Leg
+            'L9': 90,  # Hip
+            'L10': 120, # Knee
+            'L12': 90,  # Ankle
+            
+            # Right Front Leg
+            'R14': 90, # Knee
+            'R15': 90, # Hip
+            'R16': 90, # Ankle
+            
+            # Right Center Leg
+            'R6': 90,  # Hip
+            'R8': 90,  # Ankle
+            'R10': 120, # Knee
+            'R12': 90, # Extra joint
+            
+            # Right Back Leg
+            'R1': 120, # Knee
+            'R2': 90,  # Hip
+            'R3': 90   # Ankle
+        }
+
         # Define leg groups for tripod gait
         tripod_1 = {
-            'L1': 90, 'L8': 90, 'L12': 90,  # Left legs (front, center, back)
-            'R14': 90, 'R8': 90, 'R3': 90   # Right legs (front, center, back)
-        }
-        tripod_2 = {
-            'L2': 90, 'L6': 90, 'L10': 90,  # Left legs (front, center, back)
-            'R15': 90, 'R10': 90, 'R2': 90   # Right legs (front, center, back)
+            'left_front': ['L1', 'L2', 'L3'],
+            'right_center': ['R6', 'R10', 'R8'],
+            'left_back': ['L9', 'L10', 'L12']
         }
         
+        tripod_2 = {
+            'right_front': ['R15', 'R14', 'R16'],
+            'left_center': ['L5', 'L6', 'L7'],
+            'right_back': ['R2', 'R1', 'R3']
+        }
+
+        def move_leg(leg_motors, phase):
+            """Move a single leg through a walking phase
+            phase: 'lift', 'forward', 'down', or 'backward'"""
+            hip, knee, ankle = leg_motors
+            
+            if phase == 'lift':
+                # Lift leg by adjusting knee and ankle
+                self.command_queue.put(('update_motor', {'motor_id': knee, 'value': default_angles[knee] - 30}))
+                self.command_queue.put(('update_motor', {'motor_id': ankle, 'value': default_angles[ankle] + 20}))
+            
+            elif phase == 'forward':
+                # Move leg forward by rotating hip
+                self.command_queue.put(('update_motor', {'motor_id': hip, 'value': default_angles[hip] + 25}))
+            
+            elif phase == 'down':
+                # Lower leg by adjusting knee and ankle back to default
+                self.command_queue.put(('update_motor', {'motor_id': knee, 'value': default_angles[knee]}))
+                self.command_queue.put(('update_motor', {'motor_id': ankle, 'value': default_angles[ankle]}))
+            
+            elif phase == 'backward':
+                # Move leg backward by rotating hip back to default
+                self.command_queue.put(('update_motor', {'motor_id': hip, 'value': default_angles[hip]}))
+
         while self.is_walking:
             try:
-                # Lift tripod 1
-                for motor_id, value in tripod_1.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value + 30  # Lift legs
-                    }))
-                time.sleep(0.3)
+                # Move tripod 1
+                for leg_name, motors in tripod_1.items():
+                    move_leg(motors, 'lift')
+                time.sleep(0.2)
                 
-                # Move tripod 1 forward and tripod 2 backward
-                for motor_id, value in tripod_2.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value - 20  # Move backward
-                    }))
-                time.sleep(0.3)
+                for leg_name, motors in tripod_1.items():
+                    move_leg(motors, 'forward')
+                for leg_name, motors in tripod_2.items():
+                    move_leg(motors, 'backward')
+                time.sleep(0.2)
                 
-                # Lower tripod 1
-                for motor_id, value in tripod_1.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value  # Return to normal position
-                    }))
-                time.sleep(0.3)
+                for leg_name, motors in tripod_1.items():
+                    move_leg(motors, 'down')
+                time.sleep(0.2)
+
+                # Move tripod 2
+                for leg_name, motors in tripod_2.items():
+                    move_leg(motors, 'lift')
+                time.sleep(0.2)
                 
-                # Lift tripod 2
-                for motor_id, value in tripod_2.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value + 30  # Lift legs
-                    }))
-                time.sleep(0.3)
+                for leg_name, motors in tripod_2.items():
+                    move_leg(motors, 'forward')
+                for leg_name, motors in tripod_1.items():
+                    move_leg(motors, 'backward')
+                time.sleep(0.2)
                 
-                # Move tripod 2 forward and tripod 1 backward
-                for motor_id, value in tripod_1.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value - 20  # Move backward
-                    }))
-                time.sleep(0.3)
-                
-                # Lower tripod 2
-                for motor_id, value in tripod_2.items():
-                    self.command_queue.put(('update_motor', {
-                        'motor_id': motor_id,
-                        'value': value  # Return to normal position
-                    }))
-                time.sleep(0.3)
-                
+                for leg_name, motors in tripod_2.items():
+                    move_leg(motors, 'down')
+                time.sleep(0.2)
+
             except Exception as e:
                 self.message_queue.put(f"Walking sequence error: {e}")
                 self.is_walking = False
                 self.walk_button.configure(text="Start Walking")
                 break
+
+    def create_serial_monitor(self):
+        """Create serial monitor frame"""
+        monitor_frame = ttk.LabelFrame(self.root, text="Serial Monitor")
+        monitor_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Create text widget for displaying messages
+        self.monitor_text = tk.Text(monitor_frame, height=10, width=50, font=('Consolas', 10))
+        self.monitor_text.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(monitor_frame, orient='vertical', command=self.monitor_text.yview)
+        scrollbar.pack(side='right', fill='y')
+        self.monitor_text.configure(yscrollcommand=scrollbar.set)
+        
+        # Add clear button
+        clear_button = ttk.Button(monitor_frame, text="Clear Monitor", command=self.clear_monitor)
+        clear_button.pack(pady=5)
+        
+        # Make text widget read-only
+        self.monitor_text.configure(state='disabled')
+
+    def clear_monitor(self):
+        """Clear the serial monitor"""
+        self.monitor_text.configure(state='normal')
+        self.monitor_text.delete(1.0, tk.END)
+        self.monitor_text.configure(state='disabled')
+
+    def add_to_monitor(self, message):
+        """Add message to serial monitor"""
+        self.monitor_text.configure(state='normal')
+        self.monitor_text.insert(tk.END, f"{time.strftime('%H:%M:%S')} > {message}\n")
+        self.monitor_text.see(tk.END)  # Auto-scroll to bottom
+        self.monitor_text.configure(state='disabled')
+
+    def update_offset(self, motor_id, offset_str):
+        """Update motor offset and save to config"""
+        try:
+            offset = int(float(offset_str))
+            self.motor_values['offsets'][motor_id] = offset
+            self.config_handler.save_config(self.motor_values)
+            self.message_queue.put(f"Updated offset for {motor_id} to {offset}")
+        except ValueError:
+            self.message_queue.put(f"Invalid offset value for {motor_id}")
+
+    def update_servo_with_offset(self, motor_id, value, offset_str):
+        """Update servo position considering offset"""
+        try:
+            offset = int(float(offset_str))
+            adjusted_value = value + offset
+            # Ensure the adjusted value is within valid range
+            adjusted_value = max(0, min(180, adjusted_value))
+            self.update_servo(motor_id, adjusted_value)
+            # Save the base value (without offset) to config
+            self.motor_values['servo_motors'][motor_id] = value
+            self.motor_values['offsets'][motor_id] = offset
+            self.config_handler.save_config(self.motor_values)
+        except ValueError:
+            self.message_queue.put(f"Invalid offset value for {motor_id}")
 
 def main():
     root = tk.Tk()
