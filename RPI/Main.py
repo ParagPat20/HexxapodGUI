@@ -3,7 +3,6 @@ import json
 import threading
 import queue
 import time
-from HexapodController import HexapodController
 from serial_communication import SerialCommunicator
 import platform
 
@@ -14,8 +13,41 @@ class HexapodServer:
         self.socket = self.context.socket(zmq.REP)
         self.socket.bind(f"tcp://*:{zmq_port}")
         
-        # Initialize components
-        self.hexapod = HexapodController()
+        # Motor grouping
+        self.motor_groups = {
+            'left_front': {
+                "L1": "Front Leg",
+                "L2": "Front Lower",
+                "L3": "Front Middle"
+            },
+            'left_center': {
+                "L5": "Center Upper",
+                "L6": "Center Lower 2",
+                "L7": "Center Lower",
+                "L8": "Center Leg"
+            },
+            'left_back': {
+                "L9": "Back Mid",
+                "L10": "Back Lower",
+                "L12": "Back Leg"
+            },
+            'right_front': {
+                "R14": "Front Lower",
+                "R15": "Front Mid",
+                "R16": "Front Leg"
+            },
+            'right_center': {
+                "R6": "Center Upper",
+                "R8": "Center Leg",
+                "R10": "Center Lower 2",
+                "R12": "Center Lower"
+            },
+            'right_back': {
+                "R1": "Back Lower",
+                "R2": "Back Mid",
+                "R3": "Back Leg"
+            }
+        }
         
         # Determine the correct serial port based on the platform
         if platform.system() == 'Windows':
@@ -65,16 +97,6 @@ class HexapodServer:
             except Exception as e:
                 print(f"Response reading error: {e}")
     
-    def _send_motor_commands(self, leg_group, angles):
-        """Send commands to motors and wait for responses"""
-        if angles is not None:
-            motors = self.hexapod.motor_groups[leg_group]
-            for motor_id, angle in zip(motors.keys(), angles):
-                self.command_queue.put({
-                    'motor_id': motor_id,
-                    'value': int(angle)
-                })
-    
     def handle_command(self, message):
         """Handle incoming ZMQ commands"""
         try:
@@ -82,51 +104,7 @@ class HexapodServer:
             data = message.get('data')
             print(f"Received command: {command_type}")
             
-            if command_type == 'update_lengths':
-                if 'leg_group' in data:
-                    self.hexapod.set_leg_lengths(data['leg_group'], data['lengths'])
-                else:
-                    for leg_group, lengths in data.items():
-                        self.hexapod.set_leg_lengths(leg_group, lengths)
-                return {"status": "success", "message": "Leg lengths updated"}
-            
-            elif command_type == 'update_targets':
-                if 'leg_group' in data:
-                    target = [data['target']['x'], data['target']['y'], data['target']['z']]
-                    angles = self.hexapod.move_leg(data['leg_group'], target)
-                    if angles is not None:
-                        # Send angles to motors
-                        motors = self.hexapod.motor_groups[data['leg_group']]
-                        for motor_id, angle in zip(motors.keys(), angles):
-                            if not self.serial_comm.send_command(motor_id, int(angle)):
-                                return {
-                                    "status": "error",
-                                    "message": f"Failed to update motor {motor_id}"
-                                }
-                else:
-                    targets = {leg: [data[leg]['x'], data[leg]['y'], data[leg]['z']] 
-                             for leg in data}
-                    angles_dict = self.hexapod.move_all_legs(targets)
-                    if angles_dict:
-                        for leg_group, angles in angles_dict.items():
-                            motors = self.hexapod.motor_groups[leg_group]
-                            for motor_id, angle in zip(motors.keys(), angles):
-                                if not self.serial_comm.send_command(motor_id, int(angle)):
-                                    return {
-                                        "status": "error",
-                                        "message": f"Failed to update motor {motor_id}"
-                                    }
-                return {"status": "success", "message": "Targets updated and movements executed"}
-            
-            elif command_type == 'update_offsets':
-                if 'leg_group' in data:
-                    self.hexapod.add_angle_offsets(data['leg_group'], data['offsets'])
-                else:
-                    for leg_group, offsets in data.items():
-                        self.hexapod.add_angle_offsets(leg_group, offsets)
-                return {"status": "success", "message": "Servo offsets updated"}
-            
-            elif command_type == 'update_motor':
+            if command_type == 'update_motor':
                 motor_id = data.get('motor_id')
                 value = data.get('value')
                 if motor_id and value is not None:
