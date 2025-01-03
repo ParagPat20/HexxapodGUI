@@ -27,9 +27,10 @@ class HexapodGUI:
         self.response_thread = threading.Thread(target=self.response_handler, daemon=True)
         self.response_thread.start()
         
-        # Initialize config handler
+        # Initialize config handler and load last values
         self.config_handler = ConfigHandler()
-
+        self.motor_values = self.config_handler.load_config()
+        
         # Motor grouping
         self.motor_groups = {
             'left_front': {
@@ -130,11 +131,6 @@ class HexapodGUI:
         dc_frame = ttk.LabelFrame(parent, text="DC Motor Control")
         dc_frame.pack(fill='x', padx=10, pady=5)
         
-        # Add continuous update checkbox
-        self.continuous_update = tk.BooleanVar(value=True)
-        ttk.Checkbutton(dc_frame, text="Continuous Update", 
-                       variable=self.continuous_update).pack(side='top', padx=5)
-        
         # Create control elements for each DC motor
         dc_motors = {
             'LDC': 'Left DC Motor',
@@ -151,19 +147,24 @@ class HexapodGUI:
             
             # Create slider
             slider = ttk.Scale(motor_frame, from_=-255, to=255, orient='horizontal')
+            # Set initial value from config
+            initial_value = self.motor_values['dc_motors'].get(motor_id, 0)
+            slider.set(initial_value)
             slider.pack(side='left', fill='x', expand=True, padx=5)
             
             # Create entry for direct value input
-            value_var = tk.StringVar(value='0')
+            value_var = tk.StringVar(value=str(initial_value))
             entry = ttk.Entry(motor_frame, textvariable=value_var, width=8, 
                             validate='key', validatecommand=vcmd)
             entry.pack(side='left', padx=5)
             
             # Connect slider and entry
             slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
-                           self._on_dc_slider_change(v, var, e, m))
+                            self._on_dc_slider_change(v, var, e, m))
+            slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider: 
+                        self.update_dc_motor(m, float(s.get())))
             entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id: 
-                      self._on_dc_entry_change(e, s, var, ent, m))
+                        self._on_dc_entry_change(e, s, var, ent, m))
 
     def create_servo_motor_controls(self, parent):
         """Create servo motor control interface"""
@@ -171,24 +172,19 @@ class HexapodGUI:
         canvas = tk.Canvas(parent)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas)
-
+        
         scrollable_frame.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-
+        
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-
+        
         # Pack scrollbar and canvas
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-
-        # Add continuous update checkbox
-        self.servo_continuous_update = tk.BooleanVar(value=False)
-        ttk.Checkbutton(scrollable_frame, text="Continuous Update", 
-                       variable=self.servo_continuous_update).pack(side='top', padx=5)
-
+        
         # Create a frame for each leg group
         vcmd = (self.root.register(self.validate_input), '%P')
         
@@ -204,11 +200,13 @@ class HexapodGUI:
                 
                 # Create slider
                 slider = ttk.Scale(motor_frame, from_=0, to=180, orient='horizontal')
-                slider.set(90)  # Center position
+                # Set initial value from config
+                initial_value = self.motor_values['servo_motors'].get(motor_id, 90)
+                slider.set(initial_value)
                 slider.pack(side='left', fill='x', expand=True, padx=5)
                 
                 # Create entry
-                value_var = tk.StringVar(value='90')
+                value_var = tk.StringVar(value=str(initial_value))
                 entry = ttk.Entry(motor_frame, textvariable=value_var, width=8,
                                 validate='key', validatecommand=vcmd)
                 entry.pack(side='left', padx=5)
@@ -220,6 +218,8 @@ class HexapodGUI:
                 # Connect slider and entry
                 slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
                                self._on_servo_slider_change(v, var, e, m))
+                slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider: 
+                          self.update_servo(m, float(s.get())))
                 entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id: 
                           self._on_servo_entry_change(e, s, var, ent, m))
     
@@ -230,10 +230,6 @@ class HexapodGUI:
             value_var.set(f"{value:.1f}")
             entry.delete(0, tk.END)
             entry.insert(0, f"{value:.1f}")
-            
-            # If continuous update is enabled, update the servo immediately
-            if self.servo_continuous_update.get():
-                self.update_servo(motor_id, value)
         except ValueError:
             pass
     
@@ -251,12 +247,14 @@ class HexapodGUI:
             pass
     
     def update_servo(self, motor_id, value):
-        """Send servo update command"""
+        """Send servo update command and save to config"""
         self.command_queue.put(('update_motor', {
             'motor_id': motor_id,
             'value': int(value)
         }))
-    
+        # Update config
+        self.config_handler.update_motor_value(motor_id, int(value))
+
     def _on_dc_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for DC motor control"""
         try:
@@ -264,13 +262,9 @@ class HexapodGUI:
             value_var.set(f"{value:.1f}")
             entry.delete(0, tk.END)
             entry.insert(0, f"{value:.1f}")
-            
-            # If continuous update is enabled, update the motor immediately
-            if self.continuous_update.get():
-                self.update_dc_motor(motor_id, value)
         except ValueError:
             pass
-    
+
     def _on_dc_entry_change(self, event, slider, value_var, entry, motor_id):
         """Handle entry value changes for DC motor control"""
         try:
@@ -283,14 +277,16 @@ class HexapodGUI:
             self.update_dc_motor(motor_id, value)
         except ValueError:
             pass
-    
+
     def update_dc_motor(self, motor_id, value):
-        """Send DC motor update command"""
+        """Send DC motor update command and save to config"""
         self.command_queue.put(('update_motor', {
             'motor_id': motor_id,
             'value': int(value)
         }))
-    
+        # Update config
+        self.config_handler.update_motor_value(motor_id, int(value))
+
     def communication_handler(self):
         """Handle sending commands to RPI"""
         while True:
@@ -314,7 +310,7 @@ class HexapodGUI:
                 time.sleep(0.01)
             except Exception as e:
                 print(f"Response handler error: {e}")
-    
+
     def setup_keyboard_controls(self):
         """Setup keyboard controls for movement"""
         self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
@@ -328,7 +324,7 @@ class HexapodGUI:
         self.root.bind('<KeyRelease-s>', lambda e: self.handle_movement('stop'))
         self.root.bind('<KeyRelease-a>', lambda e: self.handle_movement('stop'))
         self.root.bind('<KeyRelease-d>', lambda e: self.handle_movement('stop'))
-    
+
     def handle_movement(self, direction):
         """Handle movement commands"""
         try:
@@ -349,15 +345,99 @@ class HexapodGUI:
                 self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 0}))
         except Exception as e:
             self.message_queue.put(f"Error in movement control: {e}")
-    
+
     def create_movement_control_panel(self, parent):
         """Create movement control buttons"""
         control_frame = ttk.LabelFrame(parent, text="Movement Controls")
         control_frame.pack(fill='x', padx=10, pady=5)
         
+        # Add walking control button
+        walk_button = ttk.Button(control_frame, text="Start Walking", command=self.toggle_walking)
+        walk_button.pack(pady=5)
+        self.is_walking = False
+        self.walk_button = walk_button
+        
         ttk.Label(control_frame, text="Keyboard Controls:", style='Header.TLabel').pack(pady=5)
         ttk.Label(control_frame, text="W: Forward\nS: Backward\nA: Turn Left\nD: Turn Right\nSpace: Stop",
                  justify='left').pack(padx=10, pady=5)
+
+    def toggle_walking(self):
+        """Toggle walking sequence"""
+        self.is_walking = not self.is_walking
+        if self.is_walking:
+            self.walk_button.configure(text="Stop Walking")
+            self.walking_thread = threading.Thread(target=self.walking_sequence, daemon=True)
+            self.walking_thread.start()
+        else:
+            self.walk_button.configure(text="Start Walking")
+
+    def walking_sequence(self):
+        """Execute walking sequence"""
+        # Define leg groups for tripod gait
+        tripod_1 = {
+            'L1': 90, 'L8': 90, 'L12': 90,  # Left legs (front, center, back)
+            'R14': 90, 'R8': 90, 'R3': 90   # Right legs (front, center, back)
+        }
+        tripod_2 = {
+            'L2': 90, 'L6': 90, 'L10': 90,  # Left legs (front, center, back)
+            'R15': 90, 'R10': 90, 'R2': 90   # Right legs (front, center, back)
+        }
+        
+        while self.is_walking:
+            try:
+                # Lift tripod 1
+                for motor_id, value in tripod_1.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value + 30  # Lift legs
+                    }))
+                time.sleep(0.3)
+                
+                # Move tripod 1 forward and tripod 2 backward
+                for motor_id, value in tripod_2.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value - 20  # Move backward
+                    }))
+                time.sleep(0.3)
+                
+                # Lower tripod 1
+                for motor_id, value in tripod_1.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value  # Return to normal position
+                    }))
+                time.sleep(0.3)
+                
+                # Lift tripod 2
+                for motor_id, value in tripod_2.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value + 30  # Lift legs
+                    }))
+                time.sleep(0.3)
+                
+                # Move tripod 2 forward and tripod 1 backward
+                for motor_id, value in tripod_1.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value - 20  # Move backward
+                    }))
+                time.sleep(0.3)
+                
+                # Lower tripod 2
+                for motor_id, value in tripod_2.items():
+                    self.command_queue.put(('update_motor', {
+                        'motor_id': motor_id,
+                        'value': value  # Return to normal position
+                    }))
+                time.sleep(0.3)
+                
+            except Exception as e:
+                self.message_queue.put(f"Walking sequence error: {e}")
+                self.is_walking = False
+                self.walk_button.configure(text="Start Walking")
+                break
 
 def main():
     root = tk.Tk()
