@@ -13,42 +13,6 @@ class HexapodServer:
         self.socket = self.context.socket(zmq.REP)
         self.socket.bind(f"tcp://*:{zmq_port}")
         
-        # Motor grouping
-        self.motor_groups = {
-            'left_front': {
-                "L1": "Front Leg",
-                "L2": "Front Lower",
-                "L3": "Front Middle"
-            },
-            'left_center': {
-                "L5": "Center Upper",
-                "L6": "Center Lower 2",
-                "L7": "Center Lower",
-                "L8": "Center Leg"
-            },
-            'left_back': {
-                "L9": "Back Mid",
-                "L10": "Back Lower",
-                "L12": "Back Leg"
-            },
-            'right_front': {
-                "R14": "Front Lower",
-                "R15": "Front Mid",
-                "R16": "Front Leg"
-            },
-            'right_center': {
-                "R6": "Center Upper",
-                "R8": "Center Leg",
-                "R10": "Center Lower 2",
-                "R12": "Center Lower"
-            },
-            'right_back': {
-                "R1": "Back Lower",
-                "R2": "Back Mid",
-                "R3": "Back Leg"
-            }
-        }
-        
         # Determine the correct serial port based on the platform
         if platform.system() == 'Windows':
             serial_port = 'COM7'  # Update this to match your Windows COM port

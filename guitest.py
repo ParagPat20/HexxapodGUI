@@ -256,17 +256,22 @@ class HexapodGUI:
                                        validate='key', validatecommand=vcmd)
                 offset_entry.pack(side='left', padx=2)
                 
+                # Add inversion checkbox
+                invert_var = tk.BooleanVar(value=self.motor_values['inverted_motors'].get(motor_id, False))
+                ttk.Checkbutton(motor_frame, text="Inverted", variable=invert_var,
+                              command=lambda m=motor_id, v=invert_var: self.update_motor_inversion(m, v)).pack(side='left', padx=5)
+                
                 # Add update button
                 ttk.Button(motor_frame, text="Update",
-                          command=lambda m=motor_id, s=slider, o=offset_var: 
-                          self.update_servo_with_offset(m, s.get(), o.get())).pack(side='left', padx=5)
+                          command=lambda m=motor_id, s=slider, o=offset_var, inv=invert_var: 
+                          self.update_servo_with_offset(m, s.get(), o.get(), inv.get())).pack(side='left', padx=5)
                 
                 # Connect slider and entry
-                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id, o=offset_var: 
+                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
                                self._on_servo_slider_change(v, var, e, m))
-                slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider, o=offset_var: 
-                          self.update_servo_with_offset(m, float(s.get()), o.get()))
-                entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id, o=offset_var: 
+                slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider, o=offset_var, inv=invert_var: 
+                          self.update_servo_with_offset(m, float(s.get()), o.get(), inv.get()))
+                entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id, o=offset_var, inv=invert_var: 
                           self._on_servo_entry_change(e, s, var, ent, m))
                 offset_entry.bind('<Return>', lambda e, m=motor_id, s=slider, o=offset_var:
                                 self.update_offset(m, o.get()))
@@ -278,6 +283,9 @@ class HexapodGUI:
             value_var.set(f"{value:.1f}")
             entry.delete(0, tk.END)
             entry.insert(0, f"{value:.1f}")
+            
+            # Send the raw value to update_servo
+            self.update_servo(motor_id, value)
         except ValueError:
             pass
     
@@ -289,19 +297,33 @@ class HexapodGUI:
             slider.set(value)
             value_var.set(f"{value:.1f}")
             
-            # Update the servo
+            # Send the raw value to update_servo
             self.update_servo(motor_id, value)
         except ValueError:
             pass
     
     def update_servo(self, motor_id, value):
         """Send servo update command and save to config"""
+        # Save the raw value to config
+        self.motor_values['servo_motors'][motor_id] = value
+        self.config_handler.save_config(self.motor_values)
+        
+        # Apply inversion if needed
+        if self.motor_values['inverted_motors'].get(motor_id, False):
+            value = 180 - value
+            
+        # Apply offset
+        offset = self.motor_values['offsets'].get(motor_id, 0)
+        adjusted_value = value + offset
+        
+        # Ensure the adjusted value is within valid range
+        adjusted_value = max(0, min(180, adjusted_value))
+        
+        # Send the adjusted value to the motor
         self.command_queue.put(('update_motor', {
             'motor_id': motor_id,
-            'value': int(value)
+            'value': int(adjusted_value)
         }))
-        # Update config
-        self.config_handler.update_motor_value(motor_id, int(value))
 
     def _on_dc_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for DC motor control"""
@@ -417,21 +439,9 @@ class HexapodGUI:
         """Put hexapod in standby position with offsets"""
         self.message_queue.put("Entering standby position...")
         for motor_id, angle in self.standby_angles.items():
-            # Apply offset to standby position
-            offset = self.motor_values['offsets'].get(motor_id, 0)
-            adjusted_angle = angle + offset
-            # Ensure the adjusted value is within valid range
-            adjusted_angle = max(0, min(180, adjusted_angle))
-            self.command_queue.put(('update_motor', {
-                'motor_id': motor_id,
-                'value': adjusted_angle
-            }))
-            # Save the base standby value and keep the offset
-            self.motor_values['servo_motors'][motor_id] = angle
-            self.motor_values['offsets'][motor_id] = offset
+            # Send raw standby angles to update_servo which will handle inversion and offset
+            self.update_servo(motor_id, angle)
         
-        # Save the updated configuration
-        self.config_handler.save_config(self.motor_values)
         self.message_queue.put("Standby position reached")
 
     def toggle_walking(self):
@@ -596,25 +606,37 @@ class HexapodGUI:
         try:
             offset = int(float(offset_str))
             self.motor_values['offsets'][motor_id] = offset
-            self.config_handler.save_config(self.motor_values)
+            
+            # Re-send the current value to apply new offset
+            current_value = self.motor_values['servo_motors'].get(motor_id, 90)
+            self.update_servo(motor_id, current_value)
+            
             self.message_queue.put(f"Updated offset for {motor_id} to {offset}")
         except ValueError:
             self.message_queue.put(f"Invalid offset value for {motor_id}")
 
-    def update_servo_with_offset(self, motor_id, value, offset_str):
-        """Update servo position considering offset"""
+    def update_servo_with_offset(self, motor_id, value, offset_str, is_inverted=False):
+        """Update servo position considering offset and inversion"""
         try:
+            # Update the configuration
             offset = int(float(offset_str))
-            adjusted_value = value + offset
-            # Ensure the adjusted value is within valid range
-            adjusted_value = max(0, min(180, adjusted_value))
-            self.update_servo(motor_id, adjusted_value)
-            # Save the base value (without offset) to config
-            self.motor_values['servo_motors'][motor_id] = value
             self.motor_values['offsets'][motor_id] = offset
-            self.config_handler.save_config(self.motor_values)
+            self.motor_values['inverted_motors'][motor_id] = is_inverted
+            
+            # Send the raw value to update_servo which will handle inversion and offset
+            self.update_servo(motor_id, value)
         except ValueError:
             self.message_queue.put(f"Invalid offset value for {motor_id}")
+
+    def update_motor_inversion(self, motor_id, invert_var):
+        """Update motor inversion setting and save to config"""
+        self.motor_values['inverted_motors'][motor_id] = invert_var.get()
+        
+        # Re-send the current value to apply new inversion setting
+        current_value = self.motor_values['servo_motors'].get(motor_id, 90)
+        self.update_servo(motor_id, current_value)
+        
+        self.message_queue.put(f"Updated inversion for {motor_id} to {invert_var.get()}")
 
 def main():
     root = tk.Tk()

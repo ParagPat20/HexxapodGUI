@@ -18,6 +18,8 @@ class ConfigHandler:
                     config['dc_motors'] = {}
                 if 'offsets' not in config:
                     config['offsets'] = {}
+                if 'inverted_motors' not in config:
+                    config['inverted_motors'] = {}
                 return config
             except Exception as e:
                 print(f"Error loading config: {e}")
@@ -26,7 +28,8 @@ class ConfigHandler:
         return {
             'servo_motors': {},
             'dc_motors': {},
-            'offsets': {}
+            'offsets': {},
+            'inverted_motors': {}
         }
     
     def save_config(self, config):

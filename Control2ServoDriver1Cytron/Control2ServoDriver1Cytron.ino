@@ -2,17 +2,17 @@
 #include <Adafruit_PWMServoDriver.h>
 
 // Create two PCA9685 instances
-Adafruit_PWMServoDriver pca1 = Adafruit_PWMServoDriver(0x40); // Default I2C address for PCA9685
-Adafruit_PWMServoDriver pca2 = Adafruit_PWMServoDriver(0x42); // Second PCA9685 with alternate address
+Adafruit_PWMServoDriver pca1 = Adafruit_PWMServoDriver(0x40);  // Default I2C address for PCA9685
+Adafruit_PWMServoDriver pca2 = Adafruit_PWMServoDriver(0x42);  // Second PCA9685 with alternate address
 
 // Servo settings
-#define SERVO_FREQ 50 // 50 Hz update rate for servos
+#define SERVO_FREQ 50  // 50 Hz update rate for servos
 
 // Cytron Motor Control Pins
 #define PWM1_PIN 19
-#define PWM2_PIN 5
+#define PWM2_PIN 32
 #define DIR1_PIN 18
-#define DIR2_PIN 2
+#define DIR2_PIN 33
 
 void setup() {
   Serial.begin(115200);
@@ -20,9 +20,9 @@ void setup() {
 
   // Initialize PCA9685 instances
   pca1.begin();
-  pca1.setPWMFreq(SERVO_FREQ); // 50 Hz for servos
+  pca1.setPWMFreq(SERVO_FREQ);  // 50 Hz for servos
   pca2.begin();
-  pca2.setPWMFreq(SERVO_FREQ); // 50 Hz for servos
+  pca2.setPWMFreq(SERVO_FREQ);  // 50 Hz for servos
 
   // Initialize Cytron motor control pins
   pinMode(PWM1_PIN, OUTPUT);
@@ -78,7 +78,7 @@ void parseAndSetServos(String input) {
     if (colonIdx == -1) {
       Serial.print("Invalid pair: ");
       Serial.println(pairs[i]);
-      continue; // Skip invalid pairs
+      continue;  // Skip invalid pairs
     }
 
     String key = pairs[i].substring(0, colonIdx);
@@ -99,10 +99,10 @@ void parseAndSetServos(String input) {
 
 void setServoPosition(String key, int degrees) {
   // Map degrees to PCA9685 ticks (calculated based on pulse lengths for 0 to 180 degrees)
-  int pulseLength = map(degrees, 0, 180, 102, 512); // Adjust range as needed for your servos
+  int pulseLength = map(degrees, 0, 180, 102, 512);  // Adjust range as needed for your servos
 
   if (key.startsWith("L")) {
-    int servoNum = key.substring(1).toInt() - 1; // Extract servo number for left PCA
+    int servoNum = key.substring(1).toInt() - 1;  // Extract servo number for left PCA
     if (servoNum >= 0 && servoNum < 16) {
       if (degrees == 181) {
         // Free the servo by turning off the PWM signal
@@ -121,7 +121,7 @@ void setServoPosition(String key, int degrees) {
       Serial.println(servoNum);
     }
   } else if (key.startsWith("R")) {
-    int servoNum = key.substring(1).toInt() - 1; // Extract servo number for right PCA
+    int servoNum = key.substring(1).toInt() - 1;  // Extract servo number for right PCA
     if (servoNum >= 0 && servoNum < 16) {
       if (degrees == 181) {
         // Free the servo by turning off the PWM signal
@@ -148,14 +148,13 @@ void setServoPosition(String key, int degrees) {
 void setMotorSpeed(String motor, int speed) {
   // Speed range: -255 to 255
   speed = constrain(speed, -255, 255);
-  
+
   if (motor == "LDC") {
     digitalWrite(DIR1_PIN, speed >= 0 ? HIGH : LOW);
     analogWrite(PWM1_PIN, abs(speed));
     Serial.print("Left Motor Speed: ");
     Serial.println(speed);
-  }
-  else if (motor == "RDC") {
+  } else if (motor == "RDC") {
     digitalWrite(DIR2_PIN, speed >= 0 ? HIGH : LOW);
     analogWrite(PWM2_PIN, abs(speed));
     Serial.print("Right Motor Speed: ");
