@@ -9,10 +9,10 @@ Adafruit_PWMServoDriver pca2 = Adafruit_PWMServoDriver(0x42);  // Second PCA9685
 #define SERVO_FREQ 50  // 50 Hz update rate for servos
 
 // Cytron Motor Control Pins
-#define PWM1_PIN 19
-#define PWM2_PIN 32
-#define DIR1_PIN 18
-#define DIR2_PIN 33
+#define PWM1_PIN 18
+#define PWM2_PIN 33
+#define DIR1_PIN 19
+#define DIR2_PIN 32
 
 void setup() {
   Serial.begin(115200);

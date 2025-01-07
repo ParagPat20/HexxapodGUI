@@ -14,7 +14,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.50.39:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.235.39:5555")  # Replace with your RPI's IP
         
         # Message queue for communication
         self.message_queue = queue.Queue()
@@ -37,36 +37,36 @@ class HexapodGUI:
         # Define standby angles for stable standing position
         self.standby_angles = {
             # Left Front Leg
-            'L1': 90,   # Hip centered
-            'L2': 135,  # Knee bent for stability
-            'L3': 45,   # Ankle angled for ground contact
+            'L1': 0.0,   # Hip centered
+            'L2': 45.0,  # Knee bent for stability
+            'L3': 115.0,   # Ankle angled for ground contact
             
             # Left Center Leg
-            'L5': 90,   # Hip centered
-            'L6': 135,  # Knee bent
-            'L7': 45,   # Ankle angled
-            'L8': 90,   # Extra joint centered
+            'L5': 50.0,   # Hip centered
+            'L6': 180.0,  # Knee bent
+            'L7': 90.0,   # Ankle angled
+            'L8': 0.0,   # Extra joint centered
             
             # Left Back Leg
-            'L9': 90,   # Hip centered
-            'L10': 135, # Knee bent
-            'L12': 45,  # Ankle angled
+            'L9': 115.0,   # Hip centered
+            'L10': 45.0, # Knee bent
+            'L12': 0.0,  # Ankle angled
             
             # Right Front Leg
-            'R14': 135, # Knee bent
-            'R15': 90,  # Hip centered
-            'R16': 45,  # Ankle angled
+            'R14': 45.0, # Knee bent
+            'R15': 115.0,  # Hip centered
+            'R16': 0.0,  # Ankle angled
             
             # Right Center Leg
-            'R6': 90,   # Hip centered
-            'R8': 45,   # Ankle angled
-            'R10': 135, # Knee bent
-            'R12': 90,  # Extra joint centered
+            'R6': 50.0,   # Hip centered
+            'R8': 0.0,   # Ankle angled
+            'R10': 180.0, # Knee bent
+            'R12': 90.0,  # Extra joint centered
             
             # Right Back Leg
-            'R1': 135,  # Knee bent
-            'R2': 90,   # Hip centered
-            'R3': 45    # Ankle angled
+            'R1': 45.0,  # Knee bent
+            'R2': 115.0,   # Hip centered   
+            'R3': 0.0    # Ankle angled
         }
         
         # Motor grouping
@@ -276,6 +276,10 @@ class HexapodGUI:
                 offset_entry.bind('<Return>', lambda e, m=motor_id, s=slider, o=offset_var:
                                 self.update_offset(m, o.get()))
 
+        # Add 'Update All' button
+        update_all_button = ttk.Button(scrollable_frame, text="Update All", command=self.update_all_servos)
+        update_all_button.pack(pady=5)
+
     def _on_servo_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for servo control"""
         try:
@@ -354,8 +358,9 @@ class HexapodGUI:
             'motor_id': motor_id,
             'value': int(value)
         }))
-        # Update config
-        self.config_handler.update_motor_value(motor_id, int(value))
+        # Directly update the motor value in the config
+        self.motor_values['dc_motors'][motor_id] = int(value)
+        self.config_handler.save_config(self.motor_values)
 
     def communication_handler(self):
         """Handle sending commands to RPI"""
@@ -436,12 +441,20 @@ class HexapodGUI:
                  justify='left').pack(padx=10, pady=5)
 
     def enter_standby(self):
-        """Put hexapod in standby position with offsets"""
+        """Put hexapod in standby position with offsets and perform motor sequence"""
         self.message_queue.put("Entering standby position...")
-        for motor_id, angle in self.standby_angles.items():
+        # Temporarily change the config file to standby.json
+        original_config_file = self.config_handler.config_file
+        self.config_handler.config_file = 'standby.json'
+        standby_config = self.config_handler.load_config()
+        # Restore the original config file
+        self.config_handler.config_file = original_config_file
+        
+        for motor_id, angle in standby_config['servo_motors'].items():
             # Send raw standby angles to update_servo which will handle inversion and offset
             self.update_servo(motor_id, angle)
         
+
         self.message_queue.put("Standby position reached")
 
     def toggle_walking(self):
@@ -457,41 +470,12 @@ class HexapodGUI:
             self.enter_standby()
 
     def walking_sequence(self):
-        """Execute walking sequence"""
-        # Default angles for each motor
-        default_angles = {
-            # Left Front Leg
-            'L1': 90,  # Hip
-            'L2': 120, # Knee
-            'L3': 90,  # Ankle
-            
-            # Left Center Leg
-            'L5': 90,  # Hip
-            'L6': 120, # Knee
-            'L7': 90,  # Ankle
-            'L8': 90,  # Extra joint
-            
-            # Left Back Leg
-            'L9': 90,  # Hip
-            'L10': 120, # Knee
-            'L12': 90,  # Ankle
-            
-            # Right Front Leg
-            'R14': 90, # Knee
-            'R15': 90, # Hip
-            'R16': 90, # Ankle
-            
-            # Right Center Leg
-            'R6': 90,  # Hip
-            'R8': 90,  # Ankle
-            'R10': 120, # Knee
-            'R12': 90, # Extra joint
-            
-            # Right Back Leg
-            'R1': 120, # Knee
-            'R2': 90,  # Hip
-            'R3': 90   # Ankle
-        }
+        """Execute walking sequence using tripod gait"""
+        # Load angles from standby.json for default position
+        original_config_file = self.config_handler.config_file
+        self.config_handler.config_file = 'standby.json'
+        default_angles = self.config_handler.load_config()['servo_motors']
+        self.config_handler.config_file = original_config_file
 
         # Define leg groups for tripod gait
         tripod_1 = {
@@ -501,9 +485,9 @@ class HexapodGUI:
         }
         
         tripod_2 = {
-            'right_front': ['R15', 'R14', 'R16'],
+            'right_front': ['R14', 'R15', 'R16'],
             'left_center': ['L5', 'L6', 'L7'],
-            'right_back': ['R2', 'R1', 'R3']
+            'right_back': ['R1', 'R2', 'R3']
         }
 
         def move_leg(leg_motors, phase):
@@ -513,21 +497,21 @@ class HexapodGUI:
             
             if phase == 'lift':
                 # Lift leg by adjusting knee and ankle
-                self.command_queue.put(('update_motor', {'motor_id': knee, 'value': default_angles[knee] - 30}))
-                self.command_queue.put(('update_motor', {'motor_id': ankle, 'value': default_angles[ankle] + 20}))
+                self.update_servo(knee, default_angles[knee] - 30)
+                self.update_servo(ankle, default_angles[ankle] + 20)
             
             elif phase == 'forward':
                 # Move leg forward by rotating hip
-                self.command_queue.put(('update_motor', {'motor_id': hip, 'value': default_angles[hip] + 25}))
+                self.update_servo(hip, default_angles[hip] + 25)
             
             elif phase == 'down':
                 # Lower leg by adjusting knee and ankle back to default
-                self.command_queue.put(('update_motor', {'motor_id': knee, 'value': default_angles[knee]}))
-                self.command_queue.put(('update_motor', {'motor_id': ankle, 'value': default_angles[ankle]}))
+                self.update_servo(knee, default_angles[knee])
+                self.update_servo(ankle, default_angles[ankle])
             
             elif phase == 'backward':
                 # Move leg backward by rotating hip back to default
-                self.command_queue.put(('update_motor', {'motor_id': hip, 'value': default_angles[hip]}))
+                self.update_servo(hip, default_angles[hip])
 
         while self.is_walking:
             try:
@@ -637,6 +621,19 @@ class HexapodGUI:
         self.update_servo(motor_id, current_value)
         
         self.message_queue.put(f"Updated inversion for {motor_id} to {invert_var.get()}")
+
+    def update_all_servos(self):
+        """Update all servos with current slider values, offsets, and inversion settings"""
+        for leg_group, motors in self.motor_groups.items():
+            for motor_id in motors.keys():
+                # Get current slider value
+                slider_value = self.motor_values['servo_motors'].get(motor_id, 90)
+                # Get current offset
+                offset = self.motor_values['offsets'].get(motor_id, 0)
+                # Get inversion setting
+                is_inverted = self.motor_values['inverted_motors'].get(motor_id, False)
+                # Update servo with current settings
+                self.update_servo_with_offset(motor_id, slider_value, offset, is_inverted)
 
 def main():
     root = tk.Tk()
