@@ -667,12 +667,11 @@ class HexapodGUI:
                              validate='key', validatecommand=vcmd)
             entry.pack(side='left', padx=5)
             
-            # Connect controls
             slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
+            entry.bind('<Return>', lambda e, p=param, s=slider, v=value_var: 
+                      self.update_balance_param(p, float(v.get())))
             slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
                        self.update_balance_param(p, float(s.get())))
-            entry.bind('<Return>', lambda e, p=param, s=slider, var=value_var: 
-                      self.update_balance_param_from_entry(p, var, s))
         
         # Other Parameters
         other_frame = ttk.LabelFrame(main_frame, text="Other Parameters")
@@ -700,55 +699,38 @@ class HexapodGUI:
                              validate='key', validatecommand=vcmd)
             entry.pack(side='left', padx=5)
             
-            # Connect controls
             slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
+            entry.bind('<Return>', lambda e, p=param, s=slider, v=value_var: 
+                      self.update_balance_param(p, float(v.get())))
             slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
                        self.update_balance_param(p, float(s.get())))
-            entry.bind('<Return>', lambda e, p=param, s=slider, var=value_var: 
-                      self.update_balance_param_from_entry(p, var, s))
         
         # Balance Control
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill='x', padx=5, pady=5)
         
-        self.balance_button = ttk.Button(control_frame, text="Start Balancing",
-                                       command=self.toggle_balancing)
-        self.balance_button.pack(side='left', padx=5)
-        
-        self.is_balancing = balance_params['is_balancing']
-        self.update_balance_button_text()
+        self.balance_var = tk.BooleanVar(value=balance_params['is_balancing'])
+        ttk.Checkbutton(control_frame, text="Enable Balancing", 
+                        variable=self.balance_var,
+                        command=self.toggle_balancing).pack(side='left', padx=5)
 
     def update_balance_param(self, param, value):
         """Update balance parameter"""
         response = self.send_zmq_command('update_balance_params', {param: value})
         if response and response.get('status') == 'success':
-            print(f"Updated {param} to {value}")
+            self.add_to_monitor(f"Updated {param} to {value}")
         else:
-            print(f"Failed to update {param}")
-
-    def update_balance_param_from_entry(self, param, value_var, slider):
-        """Update balance parameter from entry field"""
-        try:
-            value = float(value_var.get())
-            slider.set(value)
-            self.update_balance_param(param, value)
-        except ValueError:
-            print(f"Invalid value for {param}")
+            self.add_to_monitor(f"Error updating {param}")
 
     def toggle_balancing(self):
         """Toggle balancing mode"""
-        self.is_balancing = not self.is_balancing
-        response = self.send_zmq_command('update_balance_params', {'is_balancing': self.is_balancing})
+        is_balancing = self.balance_var.get()
+        response = self.send_zmq_command('update_balance_params', {'is_balancing': is_balancing})
         if response and response.get('status') == 'success':
-            self.update_balance_button_text()
-            print("Balancing mode toggled")
+            state = "enabled" if is_balancing else "disabled"
+            self.add_to_monitor(f"Balancing {state}")
         else:
-            self.is_balancing = not self.is_balancing  # Revert if failed
-            print("Failed to toggle balancing mode")
-
-    def update_balance_button_text(self):
-        """Update balance button text based on state"""
-        self.balance_button.configure(text="Stop Balancing" if self.is_balancing else "Start Balancing")
+            self.add_to_monitor("Error toggling balance mode")
 
 def main():
     root = tk.Tk()
