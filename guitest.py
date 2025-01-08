@@ -16,17 +16,6 @@ class HexapodGUI:
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect("tcp://192.168.235.39:5555")  # Replace with your RPI's IP
         
-        # Message queue for communication
-        self.message_queue = queue.Queue()
-        self.command_queue = queue.Queue()
-        
-        # Start communication threads
-        self.comm_thread = threading.Thread(target=self.communication_handler, daemon=True)
-        self.comm_thread.start()
-        
-        self.response_thread = threading.Thread(target=self.response_handler, daemon=True)
-        self.response_thread.start()
-        
         # Initialize config handler and load last values
         self.config_handler = ConfigHandler()
         self.motor_values = self.config_handler.load_config()
@@ -162,6 +151,11 @@ class HexapodGUI:
         movement_frame = ttk.Frame(notebook)
         notebook.add(movement_frame, text="Movement")
         self.create_movement_control_panel(movement_frame)
+        
+        # Balance Control Tab
+        balance_frame = ttk.Frame(notebook)
+        notebook.add(balance_frame, text="Balance Control")
+        self.create_balance_control_panel(balance_frame)
     
     def create_dc_motor_controls(self, parent):
         """Create DC motor control interface"""
@@ -323,11 +317,11 @@ class HexapodGUI:
         # Ensure the adjusted value is within valid range
         adjusted_value = max(0, min(180, adjusted_value))
         
-        # Send the adjusted value to the motor
-        self.command_queue.put(('update_motor', {
+        # Send the adjusted value directly to the motor
+        self.send_zmq_command('update_motor', {
             'motor_id': motor_id,
             'value': int(adjusted_value)
-        }))
+        })
 
     def _on_dc_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for DC motor control"""
@@ -354,72 +348,33 @@ class HexapodGUI:
 
     def update_dc_motor(self, motor_id, value):
         """Send DC motor update command and save to config"""
-        self.command_queue.put(('update_motor', {
+        self.send_zmq_command('update_motor', {
             'motor_id': motor_id,
             'value': int(value)
-        }))
-        # Directly update the motor value in the config
+        })
         self.motor_values['dc_motors'][motor_id] = int(value)
         self.config_handler.save_config(self.motor_values)
-
-    def communication_handler(self):
-        """Handle sending commands to RPI"""
-        while True:
-            try:
-                if not self.command_queue.empty():
-                    command_type, data = self.command_queue.get()
-                    response = self.send_zmq_command(command_type, data)
-                    if response:
-                        self.message_queue.put(f"Command response: {response['message']}")
-                time.sleep(0.01)
-            except Exception as e:
-                self.message_queue.put(f"Communication error: {e}")
-    
-    def response_handler(self):
-        """Handle responses and update UI"""
-        while True:
-            try:
-                if not self.message_queue.empty():
-                    message = self.message_queue.get()
-                    self.add_to_monitor(message)
-                time.sleep(0.01)
-            except Exception as e:
-                print(f"Response handler error: {e}")
-
-    def setup_keyboard_controls(self):
-        """Setup keyboard controls for movement"""
-        self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
-        self.root.bind('<KeyPress-s>', lambda e: self.handle_movement('backward'))
-        self.root.bind('<KeyPress-a>', lambda e: self.handle_movement('left'))
-        self.root.bind('<KeyPress-d>', lambda e: self.handle_movement('right'))
-        self.root.bind('<KeyPress-space>', lambda e: self.handle_movement('stop'))
-        
-        # Add key release handlers to stop movement
-        self.root.bind('<KeyRelease-w>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-s>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-a>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-d>', lambda e: self.handle_movement('stop'))
 
     def handle_movement(self, direction):
         """Handle movement commands"""
         try:
             if direction == 'forward':
-                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': 200}))
-                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 200}))
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
             elif direction == 'backward':
-                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': -200}))
-                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': -200}))
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -100})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -100})
             elif direction == 'left':
-                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': -200}))
-                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 200}))
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
             elif direction == 'right':
-                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': 200}))
-                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': -200}))
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
             elif direction == 'stop':
-                self.command_queue.put(('update_motor', {'motor_id': 'LDC', 'value': 0}))
-                self.command_queue.put(('update_motor', {'motor_id': 'RDC', 'value': 0}))
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
         except Exception as e:
-            self.message_queue.put(f"Error in movement control: {e}")
+            print(f"Error in movement control: {e}")
 
     def create_movement_control_panel(self, parent):
         """Create movement control buttons"""
@@ -450,11 +405,24 @@ class HexapodGUI:
         # Restore the original config file
         self.config_handler.config_file = original_config_file
         
+        # Send commands sequentially with delays
         for motor_id, angle in standby_config['servo_motors'].items():
             # Send raw standby angles to update_servo which will handle inversion and offset
             self.update_servo(motor_id, angle)
+            time.sleep(0.1)  # Add delay between servo commands
         
-
+        # Perform DC motor sequence with delays
+        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
+        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
+        time.sleep(2)  # Wait for 2 seconds
+        
+        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -100})
+        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -100})
+        time.sleep(2)  # Wait for 2 seconds
+        
+        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
+        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
+        
         self.message_queue.put("Standby position reached")
 
     def toggle_walking(self):
@@ -634,6 +602,153 @@ class HexapodGUI:
                 is_inverted = self.motor_values['inverted_motors'].get(motor_id, False)
                 # Update servo with current settings
                 self.update_servo_with_offset(motor_id, slider_value, offset, is_inverted)
+
+    def setup_keyboard_controls(self):
+        """Setup keyboard controls for movement"""
+        self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
+        self.root.bind('<KeyPress-s>', lambda e: self.handle_movement('backward'))
+        self.root.bind('<KeyPress-a>', lambda e: self.handle_movement('left'))
+        self.root.bind('<KeyPress-d>', lambda e: self.handle_movement('right'))
+        self.root.bind('<KeyPress-space>', lambda e: self.handle_movement('stop'))
+        
+        # Add key release handlers to stop movement
+        self.root.bind('<KeyRelease-w>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-s>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-a>', lambda e: self.handle_movement('stop'))
+        self.root.bind('<KeyRelease-d>', lambda e: self.handle_movement('stop'))
+
+    def create_balance_control_panel(self, parent):
+        """Create balance control interface"""
+        # Get current balance parameters
+        response = self.send_zmq_command('get_balance_params', {})
+        if response and response.get('status') == 'success':
+            balance_params = response['data']
+        else:
+            balance_params = {
+                'Kp': 30.0,
+                'Ki': 1.5,
+                'Kd': 1.2,
+                'target_angle': 0.0,
+                'deadband': 2.0,
+                'motor_scale': 2.5,
+                'comp_filter_alpha': 0.96,
+                'is_balancing': False
+            }
+        
+        # Create main frame
+        main_frame = ttk.LabelFrame(parent, text="Balance Parameters")
+        main_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        # Create parameter controls
+        vcmd = (self.root.register(self.validate_input), '%P')
+        
+        # PID Parameters
+        pid_frame = ttk.LabelFrame(main_frame, text="PID Control")
+        pid_frame.pack(fill='x', padx=5, pady=5)
+        
+        pid_params = {
+            'Kp': ('Proportional Gain', 0, 100),
+            'Ki': ('Integral Gain', 0, 10),
+            'Kd': ('Derivative Gain', 0, 10)
+        }
+        
+        for param, (label, min_val, max_val) in pid_params.items():
+            frame = ttk.Frame(pid_frame)
+            frame.pack(fill='x', padx=5, pady=2)
+            
+            ttk.Label(frame, text=f"{label} ({param}):").pack(side='left', padx=5)
+            
+            slider = ttk.Scale(frame, from_=min_val, to=max_val, orient='horizontal')
+            slider.set(balance_params[param])
+            slider.pack(side='left', fill='x', expand=True, padx=5)
+            
+            value_var = tk.StringVar(value=str(balance_params[param]))
+            entry = ttk.Entry(frame, textvariable=value_var, width=8,
+                             validate='key', validatecommand=vcmd)
+            entry.pack(side='left', padx=5)
+            
+            # Connect controls
+            slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
+            slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
+                       self.update_balance_param(p, float(s.get())))
+            entry.bind('<Return>', lambda e, p=param, s=slider, var=value_var: 
+                      self.update_balance_param_from_entry(p, var, s))
+        
+        # Other Parameters
+        other_frame = ttk.LabelFrame(main_frame, text="Other Parameters")
+        other_frame.pack(fill='x', padx=5, pady=5)
+        
+        other_params = {
+            'target_angle': ('Target Angle', -45, 45),
+            'deadband': ('Deadband', 0, 10),
+            'motor_scale': ('Motor Scale', 0, 10),
+            'comp_filter_alpha': ('Comp. Filter Alpha', 0, 1)
+        }
+        
+        for param, (label, min_val, max_val) in other_params.items():
+            frame = ttk.Frame(other_frame)
+            frame.pack(fill='x', padx=5, pady=2)
+            
+            ttk.Label(frame, text=f"{label}:").pack(side='left', padx=5)
+            
+            slider = ttk.Scale(frame, from_=min_val, to=max_val, orient='horizontal')
+            slider.set(balance_params[param])
+            slider.pack(side='left', fill='x', expand=True, padx=5)
+            
+            value_var = tk.StringVar(value=str(balance_params[param]))
+            entry = ttk.Entry(frame, textvariable=value_var, width=8,
+                             validate='key', validatecommand=vcmd)
+            entry.pack(side='left', padx=5)
+            
+            # Connect controls
+            slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
+            slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
+                       self.update_balance_param(p, float(s.get())))
+            entry.bind('<Return>', lambda e, p=param, s=slider, var=value_var: 
+                      self.update_balance_param_from_entry(p, var, s))
+        
+        # Balance Control
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill='x', padx=5, pady=5)
+        
+        self.balance_button = ttk.Button(control_frame, text="Start Balancing",
+                                       command=self.toggle_balancing)
+        self.balance_button.pack(side='left', padx=5)
+        
+        self.is_balancing = balance_params['is_balancing']
+        self.update_balance_button_text()
+
+    def update_balance_param(self, param, value):
+        """Update balance parameter"""
+        response = self.send_zmq_command('update_balance_params', {param: value})
+        if response and response.get('status') == 'success':
+            print(f"Updated {param} to {value}")
+        else:
+            print(f"Failed to update {param}")
+
+    def update_balance_param_from_entry(self, param, value_var, slider):
+        """Update balance parameter from entry field"""
+        try:
+            value = float(value_var.get())
+            slider.set(value)
+            self.update_balance_param(param, value)
+        except ValueError:
+            print(f"Invalid value for {param}")
+
+    def toggle_balancing(self):
+        """Toggle balancing mode"""
+        self.is_balancing = not self.is_balancing
+        response = self.send_zmq_command('update_balance_params', {'is_balancing': self.is_balancing})
+        if response and response.get('status') == 'success':
+            self.update_balance_button_text()
+            print("Balancing mode toggled")
+        else:
+            self.is_balancing = not self.is_balancing  # Revert if failed
+            print("Failed to toggle balancing mode")
+
+    def update_balance_button_text(self):
+        """Update balance button text based on state"""
+        self.balance_button.configure(text="Stop Balancing" if self.is_balancing else "Start Balancing")
 
 def main():
     root = tk.Tk()
