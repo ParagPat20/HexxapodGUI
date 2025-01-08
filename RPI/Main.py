@@ -1,6 +1,8 @@
 import zmq
 import json
 import platform
+import threading
+import time
 from serial_communication import SerialCommunicator
 
 class HexapodServer:
@@ -18,37 +20,27 @@ class HexapodServer:
             
         self.serial_comm = SerialCommunicator(port=serial_port)
         self.running = True
-
-        # PID and Balance Control Variables
-        self.balance_variables = {
-            'Kp': 30.0,
-            'Ki': 1.5,
-            'Kd': 1.2,
-            'target_angle': 0.0,
-            'deadband': 5.0,
-            'motor_scale': 2.5,
-            'comp_filter_alpha': 0.93,
-            'is_balancing': False
-        }
+        
+        # Add debug flag
+        self.debug = False
         
         print(f"Hexapod server started on port {zmq_port}")
     
+    def log(self, message):
+        """Centralized logging function"""
+        if self.debug:
+            print(f"[DEBUG] {message}")
+        else:
+            print(message)
+
     def handle_command(self, message):
         """Handle incoming ZMQ commands"""
         try:
             command_type = message.get('type')
             data = message.get('data')
-            print(f"Received command: {command_type}")
             
             if command_type == 'update_motor':
                 return self.handle_motor_update(data)
-            elif command_type == 'update_balance_params':
-                return self.handle_balance_params_update(data)
-            elif command_type == 'get_balance_params':
-                return {
-                    'status': 'success',
-                    'data': self.balance_variables
-                }
             else:
                 return {
                     'status': 'error',
@@ -88,32 +80,6 @@ class HexapodServer:
                 'status': 'error',
                 'message': 'Invalid motor_id or value'
             }
-
-    def handle_balance_params_update(self, data):
-        """Handle balance parameters update"""
-        try:
-            # Update balance variables
-            for key, value in data.items():
-                if key in self.balance_variables:
-                    if key == 'is_balancing':
-                        # Send balance command to ESP32
-                        cmd = "BALANCE:ON" if value else "BALANCE:OFF"
-                        self.serial_comm.send_command('CMD', cmd)
-                    else:
-                        # Send parameter update to ESP32
-                        self.serial_comm.send_command('PARAM', f"{key}:{value}")
-                    self.balance_variables[key] = value
-            
-            return {
-                'status': 'success',
-                'message': 'Balance parameters updated',
-                'data': self.balance_variables
-            }
-        except Exception as e:
-            return {
-                'status': 'error',
-                'message': f'Error updating balance parameters: {str(e)}'
-            }
     
     def run(self):
         """Main server loop"""
@@ -121,7 +87,7 @@ class HexapodServer:
             while self.running:
                 # Wait for next request from client
                 message = self.socket.recv_json()
-                print(f"Received command: {message['type']}")
+                self.log(f"Received command: {message['type']}")
                 
                 # Process the command and send response immediately
                 response = self.handle_command(message)

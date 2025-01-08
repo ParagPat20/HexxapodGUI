@@ -1,18 +1,17 @@
 /*
 References:
-1. https://github.com/bolderflight/MPU9250 - MPU9250 library with calibration
-2. https://github.com/kriswiner/MPU9250 - Advanced sensor fusion
-3. https://github.com/hideakitai/MPU9250 - DMP support
-4. https://github.com/rpicopter/ArduinoMotionSensor - Motion processing
+1. https://learn.adafruit.com/adafruit-mpu6050-6-dof-accelerometer-and-gyroscope
+2. https://github.com/adafruit/Adafruit_MPU6050
 */
 
 #include <Wire.h>
-#include <MPU9250.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <EEPROM.h>
 
 // Create instances
-MPU9250 mpu;
+Adafruit_MPU6050 mpu;
 Adafruit_PWMServoDriver pca1 = Adafruit_PWMServoDriver(0x40);
 Adafruit_PWMServoDriver pca2 = Adafruit_PWMServoDriver(0x42);
 
@@ -32,12 +31,10 @@ const float beta = 0.1f;  // 2 * proportional gain
 #define DIR1_PIN 19
 #define DIR2_PIN 32
 
-// MPU9250 calibration data structure
+// MPU6050 calibration data structure
 struct CalibrationData {
   float accel_bias[3];
   float gyro_bias[3];
-  float mag_bias[3];
-  float mag_scale[3];
   bool is_calibrated;
 };
 
@@ -79,9 +76,9 @@ void setup() {
   pca2.setPWMFreq(SERVO_FREQ);
   delay(10);
 
-  // Initialize MPU9250
+  // Initialize MPU6050
   if (!initMPU()) {
-    Serial.println("MPU9250 initialization failed!");
+    Serial.println("MPU6050 initialization failed!");
     while (1) {
       delay(10);
     }
@@ -107,12 +104,14 @@ void setup() {
 
 bool initMPU() {
   Wire.begin();
-  mpu.setup(0x68);  // Initialize with I2C address 0x68
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    return false;
+  }
   
-  // Set up configuration
-  mpu.setAccBias(0, 0, 0);
-  mpu.setGyroBias(0, 0, 0);
-  mpu.setMagBias(0, 0, 0);
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   
   return true;
 }
@@ -122,10 +121,8 @@ void loadCalibration() {
   EEPROM.get(0, calData);
   
   if (calData.is_calibrated) {
-    // Apply calibration data
-    mpu.setAccBias(calData.accel_bias[0], calData.accel_bias[1], calData.accel_bias[2]);
-    mpu.setGyroBias(calData.gyro_bias[0], calData.gyro_bias[1], calData.gyro_bias[2]);
-    mpu.setMagBias(calData.mag_bias[0], calData.mag_bias[1], calData.mag_bias[2]);
+    // Note: MPU6050 doesn't support direct bias setting through library
+    // We'll apply the calibration in the reading functions
     
     // Load motor direction configuration
     EEPROM.get(sizeof(CalibrationData), invertLeftMotor);
@@ -140,7 +137,7 @@ void loadCalibration() {
 }
 
 void calibrateMPU() {
-  Serial.println("Calibrating MPU9250...");
+  Serial.println("Calibrating MPU6050...");
   Serial.println("Keep the device still!");
   delay(2000);
 
@@ -151,13 +148,14 @@ void calibrateMPU() {
 
   unsigned long startTime = millis();
   while ((millis() - startTime) < 1000) {
-    if (mpu.update()) {
-      gyro_temp[0] += mpu.getGyroX();
-      gyro_temp[1] += mpu.getGyroY();
-      gyro_temp[2] += mpu.getGyroZ();
-      accel_temp[0] += mpu.getAccX();
-      accel_temp[1] += mpu.getAccY();
-      accel_temp[2] += mpu.getAccZ();
+    sensors_event_t a, g, temp;
+    if (mpu.getEvent(&a, &g, &temp)) {
+      gyro_temp[0] += g.gyro.x;
+      gyro_temp[1] += g.gyro.y;
+      gyro_temp[2] += g.gyro.z;
+      accel_temp[0] += a.acceleration.x;
+      accel_temp[1] += a.acceleration.y;
+      accel_temp[2] += a.acceleration.z;
       samples++;
     }
   }
@@ -170,35 +168,6 @@ void calibrateMPU() {
   
   // Remove gravity from Z axis
   calData.accel_bias[2] -= 9.81;
-
-  // Calibrate magnetometer
-  Serial.println("Rotate device in figure-8 pattern for 30 seconds");
-  delay(2000);
-
-  float mag_max[3] = {-32767, -32767, -32767};
-  float mag_min[3] = {32767, 32767, 32767};
-  
-  startTime = millis();
-  while ((millis() - startTime) < 30000) {
-    if (mpu.update()) {
-      float magX = mpu.getMagX();
-      float magY = mpu.getMagY();
-      float magZ = mpu.getMagZ();
-      
-      mag_max[0] = max(mag_max[0], magX);
-      mag_min[0] = min(mag_min[0], magX);
-      mag_max[1] = max(mag_max[1], magY);
-      mag_min[1] = min(mag_min[1], magY);
-      mag_max[2] = max(mag_max[2], magZ);
-      mag_min[2] = min(mag_min[2], magZ);
-    }
-  }
-
-  // Calculate mag bias and scale
-  for (int i = 0; i < 3; i++) {
-    calData.mag_bias[i] = (mag_max[i] + mag_min[i]) / 2;
-    calData.mag_scale[i] = (mag_max[i] - mag_min[i]) / 2;
-  }
 
   calData.is_calibrated = true;
   
@@ -252,116 +221,92 @@ void calibrateMotorDirections() {
   Serial.print("Right motor inverted: "); Serial.println(invertRightMotor);
 }
 
-void MadgwickQuaternionUpdate(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz) {
-    float q1 = q[0], q2 = q[1], q3 = q[2], q4 = q[3];
-    float norm;
-    float hx, hy, _2bx, _2bz;
-    float s1, s2, s3, s4;
-    float qDot1, qDot2, qDot3, qDot4;
-
-    // Auxiliary variables to avoid repeated arithmetic
-    float _2q1mx;
-    float _2q1my;
-    float _2q1mz;
-    float _2q2mx;
-    float _4bx;
-    float _4bz;
-    float _2q1 = 2.0f * q1;
-    float _2q2 = 2.0f * q2;
-    float _2q3 = 2.0f * q3;
-    float _2q4 = 2.0f * q4;
-    float _2q1q3 = 2.0f * q1 * q3;
-    float _2q3q4 = 2.0f * q3 * q4;
-    float q1q1 = q1 * q1;
-    float q1q2 = q1 * q2;
-    float q1q3 = q1 * q3;
-    float q1q4 = q1 * q4;
-    float q2q2 = q2 * q2;
-    float q2q3 = q2 * q3;
-    float q2q4 = q2 * q4;
-    float q3q3 = q3 * q3;
-    float q3q4 = q3 * q4;
-    float q4q4 = q4 * q4;
-
-    // Normalise accelerometer measurement
-    norm = sqrt(ax * ax + ay * ay + az * az);
-    if (norm == 0.0f) return; // handle NaN
-    norm = 1.0f/norm;
-    ax *= norm;
-    ay *= norm;
-    az *= norm;
-
-    // Normalise magnetometer measurement
-    norm = sqrt(mx * mx + my * my + mz * mz);
-    if (norm == 0.0f) return; // handle NaN
-    norm = 1.0f/norm;
-    mx *= norm;
-    my *= norm;
-    mz *= norm;
-
-    // Reference direction of Earth's magnetic field
-    _2q1mx = 2.0f * q1 * mx;
-    _2q1my = 2.0f * q1 * my;
-    _2q1mz = 2.0f * q1 * mz;
-    _2q2mx = 2.0f * q2 * mx;
-    hx = mx * q1q1 - _2q1my * q4 + _2q1mz * q3 + mx * q2q2 + _2q2 * my * q3 + _2q2 * mz * q4 - mx * q3q3 - mx * q4q4;
-    hy = _2q1mx * q4 + my * q1q1 - _2q1mz * q2 + _2q2mx * q3 - my * q2q2 + my * q3q3 + _2q3 * mz * q4 - my * q4q4;
-    _2bx = sqrt(hx * hx + hy * hy);
-    _2bz = -_2q1mx * q3 + _2q1my * q2 + mz * q1q1 + _2q2mx * q4 - mz * q2q2 + _2q3 * my * q4 - mz * q3q3 + mz * q4q4;
-    _4bx = 2.0f * _2bx;
-    _4bz = 2.0f * _2bz;
-
-    // Gradient decent algorithm corrective step
-    s1 = -_2q3 * (2.0f * q2q4 - _2q1q3 - ax) + _2q2 * (2.0f * q1q2 + _2q3q4 - ay) - _2bz * q3 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q4 + _2bz * q2) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q3 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-    s2 = _2q4 * (2.0f * q2q4 - _2q1q3 - ax) + _2q1 * (2.0f * q1q2 + _2q3q4 - ay) - 4.0f * q2 * (1.0f - 2.0f * q2q2 - 2.0f * q3q3 - az) + _2bz * q4 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q3 + _2bz * q1) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q4 - _4bz * q2) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-    s3 = -_2q1 * (2.0f * q2q4 - _2q1q3 - ax) + _2q4 * (2.0f * q1q2 + _2q3q4 - ay) - 4.0f * q3 * (1.0f - 2.0f * q2q2 - 2.0f * q3q3 - az) + (-_4bx * q3 - _2bz * q1) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q2 + _2bz * q4) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q1 - _4bz * q3) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-    s4 = _2q2 * (2.0f * q2q4 - _2q1q3 - ax) + _2q3 * (2.0f * q1q2 + _2q3q4 - ay) + (-_4bx * q4 + _2bz * q2) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q1 + _2bz * q3) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q2 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
-    norm = sqrt(s1 * s1 + s2 * s2 + s3 * s3 + s4 * s4);    // normalise step magnitude
-    norm = 1.0f/norm;
-    s1 *= norm;
-    s2 *= norm;
-    s3 *= norm;
-    s4 *= norm;
-
-    // Compute rate of change of quaternion
-    qDot1 = 0.5f * (-q2 * gx - q3 * gy - q4 * gz) - beta * s1;
-    qDot2 = 0.5f * (q1 * gx + q3 * gz - q4 * gy) - beta * s2;
-    qDot3 = 0.5f * (q1 * gy - q2 * gz + q4 * gx) - beta * s3;
-    qDot4 = 0.5f * (q1 * gz + q2 * gy - q3 * gx) - beta * s4;
-
-    // Integrate to yield quaternion
-    q1 += qDot1 * deltat;
-    q2 += qDot2 * deltat;
-    q3 += qDot3 * deltat;
-    q4 += qDot4 * deltat;
-    norm = sqrt(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);    // normalise quaternion
-    norm = 1.0f/norm;
-    q[0] = q1 * norm;
-    q[1] = q2 * norm;
-    q[2] = q3 * norm;
-    q[3] = q4 * norm;
-}
-
 void updateAngles() {
-  if (mpu.update()) {
+  sensors_event_t a, g, temp;
+  if (mpu.getEvent(&a, &g, &temp)) {
     // Get delta time
     Now = micros();
     deltat = ((Now - lastUpdate) / 1000000.0f);
     lastUpdate = Now;
 
-    // Get sensor data
-    float ax = mpu.getAccX();
-    float ay = mpu.getAccY();
-    float az = mpu.getAccZ();
-    float gx = mpu.getGyroX();
-    float gy = mpu.getGyroY();
-    float gz = mpu.getGyroZ();
-    float mx = mpu.getMagX();
-    float my = mpu.getMagY();
-    float mz = mpu.getMagZ();
+    // Apply calibration if available
+    float ax = a.acceleration.x - (calData.is_calibrated ? calData.accel_bias[0] : 0);
+    float ay = a.acceleration.y - (calData.is_calibrated ? calData.accel_bias[1] : 0);
+    float az = a.acceleration.z - (calData.is_calibrated ? calData.accel_bias[2] : 0);
+    float gx = g.gyro.x - (calData.is_calibrated ? calData.gyro_bias[0] : 0);
+    float gy = g.gyro.y - (calData.is_calibrated ? calData.gyro_bias[1] : 0);
+    float gz = g.gyro.z - (calData.is_calibrated ? calData.gyro_bias[2] : 0);
 
-    // Apply Madgwick filter
-    MadgwickQuaternionUpdate(ax, ay, az, gx, gy, gz, mx, my, mz);
+    // Apply Madgwick filter (without magnetometer)
+    float recipNorm;
+    float s1, s2, s3, s4;
+    float qDot1, qDot2, qDot3, qDot4;
+    float _2q1, _2q2, _2q3, _2q4;
+    float _4q1, _4q2, _4q3;
+    float _8q2, _8q3;
+    float q1q1, q2q2, q3q3, q4q4;
+
+    // Rate of change of quaternion from gyroscope
+    qDot1 = 0.5f * (-q[1] * gx - q[2] * gy - q[3] * gz);
+    qDot2 = 0.5f * (q[0] * gx + q[2] * gz - q[3] * gy);
+    qDot3 = 0.5f * (q[0] * gy - q[1] * gz + q[3] * gx);
+    qDot4 = 0.5f * (q[0] * gz + q[1] * gy - q[2] * gx);
+
+    // Compute feedback only if accelerometer measurement valid
+    if (!((ax == 0.0f) && (ay == 0.0f) && (az == 0.0f))) {
+      // Normalise accelerometer measurement
+      recipNorm = 1.0f / sqrt(ax * ax + ay * ay + az * az);
+      ax *= recipNorm;
+      ay *= recipNorm;
+      az *= recipNorm;
+
+      // Auxiliary variables to avoid repeated arithmetic
+      _2q1 = 2.0f * q[0];
+      _2q2 = 2.0f * q[1];
+      _2q3 = 2.0f * q[2];
+      _2q4 = 2.0f * q[3];
+      _4q1 = 4.0f * q[0];
+      _4q2 = 4.0f * q[1];
+      _4q3 = 4.0f * q[2];
+      _8q2 = 8.0f * q[1];
+      _8q3 = 8.0f * q[2];
+      q1q1 = q[0] * q[0];
+      q2q2 = q[1] * q[1];
+      q3q3 = q[2] * q[2];
+      q4q4 = q[3] * q[3];
+
+      // Gradient decent algorithm corrective step
+      s1 = _4q1 * q3q3 + _2q3 * ax + _4q1 * q2q2 - _2q2 * ay;
+      s2 = _4q2 * q4q4 - _2q4 * ax + 4.0f * q1q1 * q[1] - _2q1 * ay - _4q2 + _8q2 * q2q2 + _8q2 * q3q3 + _4q2 * az;
+      s3 = 4.0f * q1q1 * q[2] + _2q1 * ax + _4q3 * q4q4 - _2q4 * ay - _4q3 + _8q3 * q2q2 + _8q3 * q3q3 + _4q3 * az;
+      s4 = 4.0f * q2q2 * q[3] - _2q2 * ax + 4.0f * q3q3 * q[3] - _2q3 * ay;
+
+      // Normalise step magnitude
+      recipNorm = 1.0f / sqrt(s1 * s1 + s2 * s2 + s3 * s3 + s4 * s4);
+      s1 *= recipNorm;
+      s2 *= recipNorm;
+      s3 *= recipNorm;
+      s4 *= recipNorm;
+
+      // Apply feedback step
+      qDot1 -= beta * s1;
+      qDot2 -= beta * s2;
+      qDot3 -= beta * s3;
+      qDot4 -= beta * s4;
+    }
+
+    // Integrate rate of change of quaternion to yield quaternion
+    q[0] += qDot1 * deltat;
+    q[1] += qDot2 * deltat;
+    q[2] += qDot3 * deltat;
+    q[3] += qDot4 * deltat;
+
+    // Normalise quaternion
+    recipNorm = 1.0f / sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    q[0] *= recipNorm;
+    q[1] *= recipNorm;
+    q[2] *= recipNorm;
+    q[3] *= recipNorm;
 
     // Convert quaternion to Euler angles
     roll = atan2(2.0f * (q[0] * q[1] + q[2] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]));

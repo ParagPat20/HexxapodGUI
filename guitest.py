@@ -5,6 +5,9 @@ import threading
 import queue
 import time
 from config_handler import ConfigHandler
+import json
+import os
+from tkinter import filedialog
 
 class HexapodGUI:
     def __init__(self, root):
@@ -14,13 +17,20 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.235.39:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.146.192:5555")  # Replace with your RPI's IP
         
-        # Initialize config handler and load last values
+        # Initialize config handlers for both configs
         self.config_handler = ConfigHandler()
+        self.standby_config_handler = ConfigHandler('standby.json')
         self.motor_values = self.config_handler.load_config()
+        self.standby_values = self.standby_config_handler.load_config()
         
-        # Create serial monitor
+        # Initialize keyframe sequence list
+        self.keyframe_sequences = []
+        self.current_sequence = []
+        self.sequence_running = False
+        
+        # Create serial monitor first (since other methods might need to log messages)
         self.create_serial_monitor()
         
         # Define standby angles for stable standing position
@@ -106,6 +116,10 @@ class HexapodGUI:
         style = ttk.Style()
         style.configure('Header.TLabel', font=('Helvetica', 12, 'bold'))
         style.configure('Monitor.TLabel', font=('Consolas', 10))
+        style.configure('Emergency.TButton', 
+                        background='red', 
+                        foreground='white',
+                        font=('Helvetica', 10, 'bold'))
     
     def send_zmq_command(self, command_type, data):
         """Send command to RPI"""
@@ -146,11 +160,6 @@ class HexapodGUI:
         servo_frame = ttk.Frame(notebook)
         notebook.add(servo_frame, text="Servo Motors")
         self.create_servo_motor_controls(servo_frame)
-        
-        # Movement Controls Tab
-        movement_frame = ttk.Frame(notebook)
-        notebook.add(movement_frame, text="Movement")
-        self.create_movement_control_panel(movement_frame)
         
         # Balance Control Tab
         balance_frame = ttk.Frame(notebook)
@@ -358,52 +367,180 @@ class HexapodGUI:
     def handle_movement(self, direction):
         """Handle movement commands"""
         try:
+            # Speed levels
+            SPEED_LOW = 50
+            SPEED_MED = 100
+            SPEED_HIGH = 200
+            
             if direction == 'forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
+            elif direction == 'forward_fast':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_HIGH})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_HIGH})
+            elif direction == 'forward_slow':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
             elif direction == 'backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -100})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -100})
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
+            elif direction == 'backward_fast':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_HIGH})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_HIGH})
+            elif direction == 'backward_slow':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
             elif direction == 'left':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
             elif direction == 'right':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
+            elif direction == 'rotate_left':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
+            elif direction == 'rotate_right':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
+            elif direction == 'left_motor_forward':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
+            elif direction == 'left_motor_backward':
+                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
+            elif direction == 'right_motor_forward':
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
+            elif direction == 'right_motor_backward':
+                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
             elif direction == 'stop':
                 self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
                 self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
         except Exception as e:
             print(f"Error in movement control: {e}")
 
-    def create_movement_control_panel(self, parent):
-        """Create movement control buttons"""
-        control_frame = ttk.LabelFrame(parent, text="Movement Controls")
-        control_frame.pack(fill='x', padx=10, pady=5)
+    def create_balance_control_panel(self, parent):
+        """Create movement control interface"""
+        # Create main frame with notebook for sub-tabs
+        main_frame = ttk.Notebook(parent)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=5)
         
-        # Add standby button
-        standby_button = ttk.Button(control_frame, text="Standby Position", command=self.enter_standby)
-        standby_button.pack(pady=5)
+        # Movement Control Tab
+        movement_tab = ttk.Frame(main_frame)
+        main_frame.add(movement_tab, text="Movement Control")
+        self.create_movement_controls(movement_tab)
         
-        # Add walking control button
-        walk_button = ttk.Button(control_frame, text="Start Walking", command=self.toggle_walking)
-        walk_button.pack(pady=5)
+        # Keyframe Control Tab
+        keyframe_tab = ttk.Frame(main_frame)
+        main_frame.add(keyframe_tab, text="Keyframe Control")
+        self.create_keyframe_controls(keyframe_tab)
+    
+    def create_movement_controls(self, parent):
+        """Create movement control panel"""
+        # Create left frame for controls
+        left_frame = ttk.LabelFrame(parent, text="Controls")
+        left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+        
+        # Create right frame for instructions
+        right_frame = ttk.LabelFrame(parent, text="Instructions")
+        right_frame.pack(side='right', fill='both', expand=True, padx=5, pady=5)
+        
+        # Add control sections to left frame
+        # Special Functions Section
+        special_frame = ttk.LabelFrame(left_frame, text="Special Functions")
+        special_frame.pack(fill='x', padx=5, pady=5)
+        
+        # Add standby and walking controls in a row
+        standby_button = ttk.Button(special_frame, text="Standby Position", command=self.enter_standby)
+        standby_button.pack(side='left', fill='x', expand=True, padx=5, pady=5)
+        
+        walk_button = ttk.Button(special_frame, text="Start Walking", command=self.toggle_walking)
+        walk_button.pack(side='left', fill='x', expand=True, padx=5, pady=5)
         self.is_walking = False
         self.walk_button = walk_button
         
-        ttk.Label(control_frame, text="Keyboard Controls:", style='Header.TLabel').pack(pady=5)
-        ttk.Label(control_frame, text="W: Forward\nS: Backward\nA: Turn Left\nD: Turn Right\nSpace: Stop",
-                 justify='left').pack(padx=10, pady=5)
+        emergency_stop = ttk.Button(special_frame, text="EMERGENCY STOP", 
+                                  command=lambda: self.handle_movement('stop'),
+                                  style='Emergency.TButton')
+        emergency_stop.pack(side='left', fill='x', expand=True, padx=5, pady=5)
+        
+        # Movement Controls Section
+        movement_frame = ttk.LabelFrame(left_frame, text="Movement Controls")
+        movement_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Create a 3x3 grid for movement buttons
+        buttons = [
+            (None, "Forward", 'forward', None),
+            (None, "Rotate Left", 'rotate_left', "Rotate Right"),
+            ("Left", "Stop", 'stop', "Right"),
+            (None, "Backward", 'backward', None)
+        ]
+        
+        for row, (left_cmd, center_cmd, center_action, right_cmd) in enumerate(buttons):
+            frame = ttk.Frame(movement_frame)
+            frame.pack(fill='x', padx=5, pady=2)
+            
+            # Left button
+            if left_cmd:
+                btn = ttk.Button(frame, text=left_cmd, 
+                               command=lambda cmd=left_cmd.lower(): self.handle_movement(cmd))
+                btn.pack(side='left', fill='x', expand=True, padx=2)
+            
+            # Center button
+            if center_cmd:
+                btn = ttk.Button(frame, text=center_cmd, 
+                               command=lambda cmd=center_action: self.handle_movement(cmd))
+                btn.pack(side='left', fill='x', expand=True, padx=2)
+            
+            # Right button
+            if right_cmd:
+                btn = ttk.Button(frame, text=right_cmd, 
+                               command=lambda cmd=right_cmd.lower(): self.handle_movement(cmd))
+                btn.pack(side='left', fill='x', expand=True, padx=2)
+        
+        # Speed Control Section
+        speed_frame = ttk.LabelFrame(left_frame, text="Speed Control")
+        speed_frame.pack(fill='x', padx=5, pady=5)
+        
+        speeds = [
+            ("Slow Speed", 'slow', 50),
+            ("Medium Speed", 'medium', 100),
+            ("High Speed", 'high', 200)
+        ]
+        
+        for text, speed, value in speeds:
+            btn = ttk.Radiobutton(speed_frame, text=f"{text} ({value})",
+                                value=value, command=lambda v=value: self.set_movement_speed(v))
+            btn.pack(side='left', fill='x', expand=True, padx=5, pady=2)
+        
+        # Add instructions to right frame
+        ttk.Label(right_frame, text="Keyboard Controls:", style='Header.TLabel').pack(pady=5)
+        controls_text = """
+Movement Controls:
+W/S: Forward/Backward
+A/D: Turn Left/Right
+Q/E: Rotate Left/Right
+Space: Emergency Stop
+
+Speed Controls:
+Shift + W/S: Fast Forward/Backward
+Ctrl + W/S: Slow Forward/Backward
+Normal W/S: Medium Speed
+
+Individual Motor Controls:
+U/J: Left Motor Forward/Backward
+I/K: Right Motor Forward/Backward
+
+Note: 
+- All motors stop automatically when keys are released
+- Use Shift/Ctrl for speed control
+- Individual motor controls help in fine adjustments
+"""
+        ttk.Label(right_frame, text=controls_text, justify='left').pack(padx=10, pady=5)
 
     def enter_standby(self):
-        """Put hexapod in standby position with offsets and perform motor sequence"""
-        self.message_queue.put("Entering standby position...")
-        # Temporarily change the config file to standby.json
-        original_config_file = self.config_handler.config_file
-        self.config_handler.config_file = 'standby.json'
-        standby_config = self.config_handler.load_config()
-        # Restore the original config file
-        self.config_handler.config_file = original_config_file
+        """Put hexapod in standby position with offsets"""
+        self.add_to_monitor("Entering standby position...")
+        
+        # Load standby positions from standby.json
+        standby_config = self.standby_config_handler.load_config()
         
         # Send commands sequentially with delays
         for motor_id, angle in standby_config['servo_motors'].items():
@@ -411,19 +548,11 @@ class HexapodGUI:
             self.update_servo(motor_id, angle)
             time.sleep(0.1)  # Add delay between servo commands
         
-        # Perform DC motor sequence with delays
-        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 100})
-        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 100})
-        time.sleep(2)  # Wait for 2 seconds
-        
-        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -100})
-        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -100})
-        time.sleep(2)  # Wait for 2 seconds
-        
+        # Stop DC motors
         self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
         self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
         
-        self.message_queue.put("Standby position reached")
+        self.add_to_monitor("Standby position reached")
 
     def toggle_walking(self):
         """Toggle walking sequence"""
@@ -439,85 +568,91 @@ class HexapodGUI:
 
     def walking_sequence(self):
         """Execute walking sequence using tripod gait"""
-        # Load angles from standby.json for default position
-        original_config_file = self.config_handler.config_file
-        self.config_handler.config_file = 'standby.json'
-        default_angles = self.config_handler.load_config()['servo_motors']
-        self.config_handler.config_file = original_config_file
+        try:
+            # Load angles from standby.json for default position
+            original_config_file = self.config_handler.config_file
+            self.config_handler.config_file = 'standby.json'
+            default_angles = self.config_handler.load_config()['servo_motors']
+            self.config_handler.config_file = original_config_file
 
-        # Define leg groups for tripod gait
-        tripod_1 = {
-            'left_front': ['L1', 'L2', 'L3'],
-            'right_center': ['R6', 'R10', 'R8'],
-            'left_back': ['L9', 'L10', 'L12']
-        }
-        
-        tripod_2 = {
-            'right_front': ['R14', 'R15', 'R16'],
-            'left_center': ['L5', 'L6', 'L7'],
-            'right_back': ['R1', 'R2', 'R3']
-        }
-
-        def move_leg(leg_motors, phase):
-            """Move a single leg through a walking phase
-            phase: 'lift', 'forward', 'down', or 'backward'"""
-            hip, knee, ankle = leg_motors
+            # Define leg groups for tripod gait
+            tripod_1 = {
+                'left_front': ['L1', 'L2', 'L3'],
+                'right_center': ['R6', 'R10', 'R8'],
+                'left_back': ['L9', 'L10', 'L12']
+            }
             
-            if phase == 'lift':
-                # Lift leg by adjusting knee and ankle
-                self.update_servo(knee, default_angles[knee] - 30)
-                self.update_servo(ankle, default_angles[ankle] + 20)
-            
-            elif phase == 'forward':
-                # Move leg forward by rotating hip
-                self.update_servo(hip, default_angles[hip] + 25)
-            
-            elif phase == 'down':
-                # Lower leg by adjusting knee and ankle back to default
-                self.update_servo(knee, default_angles[knee])
-                self.update_servo(ankle, default_angles[ankle])
-            
-            elif phase == 'backward':
-                # Move leg backward by rotating hip back to default
-                self.update_servo(hip, default_angles[hip])
+            tripod_2 = {
+                'right_front': ['R14', 'R15', 'R16'],
+                'left_center': ['L5', 'L6', 'L7'],
+                'right_back': ['R1', 'R2', 'R3']
+            }
 
-        while self.is_walking:
-            try:
-                # Move tripod 1
-                for leg_name, motors in tripod_1.items():
-                    move_leg(motors, 'lift')
-                time.sleep(0.2)
+            def move_leg(leg_motors, phase):
+                """Move a single leg through a walking phase
+                phase: 'lift', 'forward', 'down', or 'backward'"""
+                hip, knee, ankle = leg_motors
                 
-                for leg_name, motors in tripod_1.items():
-                    move_leg(motors, 'forward')
-                for leg_name, motors in tripod_2.items():
-                    move_leg(motors, 'backward')
-                time.sleep(0.2)
+                if phase == 'lift':
+                    # Lift leg by adjusting knee and ankle
+                    self.update_servo(knee, default_angles[knee] - 30)
+                    self.update_servo(ankle, default_angles[ankle] + 20)
                 
-                for leg_name, motors in tripod_1.items():
-                    move_leg(motors, 'down')
-                time.sleep(0.2)
+                elif phase == 'forward':
+                    # Move leg forward by rotating hip
+                    self.update_servo(hip, default_angles[hip] + 25)
+                
+                elif phase == 'down':
+                    # Lower leg by adjusting knee and ankle back to default
+                    self.update_servo(knee, default_angles[knee])
+                    self.update_servo(ankle, default_angles[ankle])
+                
+                elif phase == 'backward':
+                    # Move leg backward by rotating hip back to default
+                    self.update_servo(hip, default_angles[hip])
 
-                # Move tripod 2
-                for leg_name, motors in tripod_2.items():
-                    move_leg(motors, 'lift')
-                time.sleep(0.2)
-                
-                for leg_name, motors in tripod_2.items():
-                    move_leg(motors, 'forward')
-                for leg_name, motors in tripod_1.items():
-                    move_leg(motors, 'backward')
-                time.sleep(0.2)
-                
-                for leg_name, motors in tripod_2.items():
-                    move_leg(motors, 'down')
-                time.sleep(0.2)
+            while self.is_walking:
+                try:
+                    # Move tripod 1
+                    for leg_name, motors in tripod_1.items():
+                        move_leg(motors, 'lift')
+                    time.sleep(0.2)
+                    
+                    for leg_name, motors in tripod_1.items():
+                        move_leg(motors, 'forward')
+                    for leg_name, motors in tripod_2.items():
+                        move_leg(motors, 'backward')
+                    time.sleep(0.2)
+                    
+                    for leg_name, motors in tripod_1.items():
+                        move_leg(motors, 'down')
+                    time.sleep(0.2)
 
-            except Exception as e:
-                self.message_queue.put(f"Walking sequence error: {e}")
-                self.is_walking = False
-                self.walk_button.configure(text="Start Walking")
-                break
+                    # Move tripod 2
+                    for leg_name, motors in tripod_2.items():
+                        move_leg(motors, 'lift')
+                    time.sleep(0.2)
+                    
+                    for leg_name, motors in tripod_2.items():
+                        move_leg(motors, 'forward')
+                    for leg_name, motors in tripod_1.items():
+                        move_leg(motors, 'backward')
+                    time.sleep(0.2)
+                    
+                    for leg_name, motors in tripod_2.items():
+                        move_leg(motors, 'down')
+                    time.sleep(0.2)
+
+                except Exception as e:
+                    self.add_to_monitor(f"Walking sequence error: {e}")
+                    self.is_walking = False
+                    self.walk_button.configure(text="Start Walking")
+                    break
+
+        except Exception as e:
+            self.add_to_monitor(f"Walking sequence error: {e}")
+            self.is_walking = False
+            self.walk_button.configure(text="Start Walking")
 
     def create_serial_monitor(self):
         """Create serial monitor frame"""
@@ -563,9 +698,9 @@ class HexapodGUI:
             current_value = self.motor_values['servo_motors'].get(motor_id, 90)
             self.update_servo(motor_id, current_value)
             
-            self.message_queue.put(f"Updated offset for {motor_id} to {offset}")
+            self.add_to_monitor(f"Updated offset for {motor_id} to {offset}")
         except ValueError:
-            self.message_queue.put(f"Invalid offset value for {motor_id}")
+            self.add_to_monitor(f"Invalid offset value for {motor_id}")
 
     def update_servo_with_offset(self, motor_id, value, offset_str, is_inverted=False):
         """Update servo position considering offset and inversion"""
@@ -578,7 +713,7 @@ class HexapodGUI:
             # Send the raw value to update_servo which will handle inversion and offset
             self.update_servo(motor_id, value)
         except ValueError:
-            self.message_queue.put(f"Invalid offset value for {motor_id}")
+            self.add_to_monitor(f"Invalid offset value for {motor_id}")
 
     def update_motor_inversion(self, motor_id, invert_var):
         """Update motor inversion setting and save to config"""
@@ -588,7 +723,7 @@ class HexapodGUI:
         current_value = self.motor_values['servo_motors'].get(motor_id, 90)
         self.update_servo(motor_id, current_value)
         
-        self.message_queue.put(f"Updated inversion for {motor_id} to {invert_var.get()}")
+        self.add_to_monitor(f"Updated inversion for {motor_id} to {invert_var.get()}")
 
     def update_all_servos(self):
         """Update all servos with current slider values, offsets, and inversion settings"""
@@ -605,137 +740,327 @@ class HexapodGUI:
 
     def setup_keyboard_controls(self):
         """Setup keyboard controls for movement"""
+        # Main movement controls
         self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
         self.root.bind('<KeyPress-s>', lambda e: self.handle_movement('backward'))
         self.root.bind('<KeyPress-a>', lambda e: self.handle_movement('left'))
         self.root.bind('<KeyPress-d>', lambda e: self.handle_movement('right'))
         self.root.bind('<KeyPress-space>', lambda e: self.handle_movement('stop'))
         
-        # Add key release handlers to stop movement
-        self.root.bind('<KeyRelease-w>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-s>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-a>', lambda e: self.handle_movement('stop'))
-        self.root.bind('<KeyRelease-d>', lambda e: self.handle_movement('stop'))
+        # Speed variations with Shift key
+        self.root.bind('<Shift-W>', lambda e: self.handle_movement('forward_fast'))
+        self.root.bind('<Shift-S>', lambda e: self.handle_movement('backward_fast'))
+        
+        # Speed variations with Control key
+        self.root.bind('<Control-w>', lambda e: self.handle_movement('forward_slow'))
+        self.root.bind('<Control-s>', lambda e: self.handle_movement('backward_slow'))
+        
+        # Rotation controls
+        self.root.bind('<KeyPress-q>', lambda e: self.handle_movement('rotate_left'))
+        self.root.bind('<KeyPress-e>', lambda e: self.handle_movement('rotate_right'))
+        
+        # Individual motor controls
+        self.root.bind('<KeyPress-u>', lambda e: self.handle_movement('left_motor_forward'))
+        self.root.bind('<KeyPress-j>', lambda e: self.handle_movement('left_motor_backward'))
+        self.root.bind('<KeyPress-i>', lambda e: self.handle_movement('right_motor_forward'))
+        self.root.bind('<KeyPress-k>', lambda e: self.handle_movement('right_motor_backward'))
+        
+        # Stop on key release for all movement keys
+        movement_keys = ['w', 's', 'a', 'd', 'q', 'e', 'u', 'j', 'i', 'k']
+        for key in movement_keys:
+            self.root.bind(f'<KeyRelease-{key}>', lambda e: self.handle_movement('stop'))
+            self.root.bind(f'<KeyRelease-{key.upper()}>', lambda e: self.handle_movement('stop'))
 
-    def create_balance_control_panel(self, parent):
-        """Create balance control interface"""
-        # Get current balance parameters
-        response = self.send_zmq_command('get_balance_params', {})
-        if response and response.get('status') == 'success':
-            balance_params = response['data']
-        else:
-            balance_params = {
-                'Kp': 30.0,
-                'Ki': 1.5,
-                'Kd': 1.2,
-                'target_angle': 0.0,
-                'deadband': 2.0,
-                'motor_scale': 2.5,
-                'comp_filter_alpha': 0.96,
-                'is_balancing': False
-            }
-        
-        # Create main frame
-        main_frame = ttk.LabelFrame(parent, text="Balance Parameters")
-        main_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        # Create parameter controls
-        vcmd = (self.root.register(self.validate_input), '%P')
-        
-        # PID Parameters
-        pid_frame = ttk.LabelFrame(main_frame, text="PID Control")
-        pid_frame.pack(fill='x', padx=5, pady=5)
-        
-        pid_params = {
-            'Kp': ('Proportional Gain', 0, 100),
-            'Ki': ('Integral Gain', 0, 10),
-            'Kd': ('Derivative Gain', 0, 10)
-        }
-        
-        for param, (label, min_val, max_val) in pid_params.items():
-            frame = ttk.Frame(pid_frame)
-            frame.pack(fill='x', padx=5, pady=2)
-            
-            ttk.Label(frame, text=f"{label} ({param}):").pack(side='left', padx=5)
-            
-            slider = ttk.Scale(frame, from_=min_val, to=max_val, orient='horizontal')
-            slider.set(balance_params[param])
-            slider.pack(side='left', fill='x', expand=True, padx=5)
-            
-            value_var = tk.StringVar(value=str(balance_params[param]))
-            entry = ttk.Entry(frame, textvariable=value_var, width=8,
-                             validate='key', validatecommand=vcmd)
-            entry.pack(side='left', padx=5)
-            
-            slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
-            entry.bind('<Return>', lambda e, p=param, s=slider, v=value_var: 
-                      self.update_balance_param(p, float(v.get())))
-            slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
-                       self.update_balance_param(p, float(s.get())))
-        
-        # Other Parameters
-        other_frame = ttk.LabelFrame(main_frame, text="Other Parameters")
-        other_frame.pack(fill='x', padx=5, pady=5)
-        
-        other_params = {
-            'target_angle': ('Target Angle', -45, 45),
-            'deadband': ('Deadband', 0, 10),
-            'motor_scale': ('Motor Scale', 0, 10),
-            'comp_filter_alpha': ('Comp. Filter Alpha', 0, 1)
-        }
-        
-        for param, (label, min_val, max_val) in other_params.items():
-            frame = ttk.Frame(other_frame)
-            frame.pack(fill='x', padx=5, pady=2)
-            
-            ttk.Label(frame, text=f"{label}:").pack(side='left', padx=5)
-            
-            slider = ttk.Scale(frame, from_=min_val, to=max_val, orient='horizontal')
-            slider.set(balance_params[param])
-            slider.pack(side='left', fill='x', expand=True, padx=5)
-            
-            value_var = tk.StringVar(value=str(balance_params[param]))
-            entry = ttk.Entry(frame, textvariable=value_var, width=8,
-                             validate='key', validatecommand=vcmd)
-            entry.pack(side='left', padx=5)
-            
-            slider.configure(command=lambda v, var=value_var: var.set(f"{float(v):.2f}"))
-            entry.bind('<Return>', lambda e, p=param, s=slider, v=value_var: 
-                      self.update_balance_param(p, float(v.get())))
-            slider.bind('<ButtonRelease-1>', lambda e, p=param, s=slider: 
-                       self.update_balance_param(p, float(s.get())))
-        
-        # Balance Control
-        control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill='x', padx=5, pady=5)
-        
-        self.balance_var = tk.BooleanVar(value=balance_params['is_balancing'])
-        ttk.Checkbutton(control_frame, text="Enable Balancing", 
-                        variable=self.balance_var,
-                        command=self.toggle_balancing).pack(side='left', padx=5)
+    def set_movement_speed(self, speed):
+        """Set the movement speed for DC motors"""
+        self.current_speed = speed
+        self.add_to_monitor(f"Movement speed set to: {speed}")
 
-    def update_balance_param(self, param, value):
-        """Update balance parameter"""
-        response = self.send_zmq_command('update_balance_params', {param: value})
-        if response and response.get('status') == 'success':
-            self.add_to_monitor(f"Updated {param} to {value}")
-        else:
-            self.add_to_monitor(f"Error updating {param}")
+    def create_keyframe_controls(self, parent):
+        """Create keyframe control interface"""
+        # Create main container
+        container = ttk.Frame(parent)
+        container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Left panel for sequence controls
+        left_panel = ttk.LabelFrame(container, text="Sequence Controls")
+        left_panel.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+        
+        # Right panel for keyframe editor
+        right_panel = ttk.LabelFrame(container, text="Keyframe Editor")
+        right_panel.pack(side='right', fill='both', expand=True, padx=5, pady=5)
+        
+        # Sequence Controls
+        sequence_frame = ttk.Frame(left_panel)
+        sequence_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(sequence_frame, text="Sequence Name:").pack(side='left', padx=5)
+        self.sequence_name = tk.StringVar(value="New Sequence")
+        ttk.Entry(sequence_frame, textvariable=self.sequence_name).pack(side='left', fill='x', expand=True, padx=5)
+        
+        # Buttons for sequence control
+        btn_frame = ttk.Frame(left_panel)
+        btn_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="New Sequence", 
+                  command=self.new_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Save Sequence", 
+                  command=self.save_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Load Sequence", 
+                  command=self.load_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Play Sequence", 
+                  command=self.play_sequence).pack(side='left', padx=2)
+        
+        # Keyframe list
+        ttk.Label(left_panel, text="Keyframes:").pack(anchor='w', padx=5)
+        self.keyframe_listbox = tk.Listbox(left_panel, height=10)
+        self.keyframe_listbox.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Keyframe Editor
+        editor_frame = ttk.Frame(right_panel)
+        editor_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        # Time control
+        time_frame = ttk.Frame(editor_frame)
+        time_frame.pack(fill='x', pady=5)
+        ttk.Label(time_frame, text="Duration (ms):").pack(side='left', padx=5)
+        self.duration_var = tk.StringVar(value="1000")
+        ttk.Entry(time_frame, textvariable=self.duration_var, width=10).pack(side='left', padx=5)
+        
+        # Servo angle controls
+        angle_frame = ttk.LabelFrame(editor_frame, text="Servo Angles")
+        angle_frame.pack(fill='both', expand=True, pady=5)
+        
+        # Create servo angle controls by leg groups
+        self.angle_vars = {}
+        row = 0
+        col = 0
+        for leg_group, motors in self.motor_groups.items():
+            group_frame = ttk.LabelFrame(angle_frame, text=leg_group.replace('_', ' ').title())
+            group_frame.grid(row=row, column=col, padx=5, pady=5, sticky='nsew')
+            
+            for motor_id, motor_name in motors.items():
+                motor_frame = ttk.Frame(group_frame)
+                motor_frame.pack(fill='x', pady=2)
+                
+                ttk.Label(motor_frame, text=f"{motor_name}:").pack(side='left', padx=2)
+                self.angle_vars[motor_id] = tk.StringVar(value="0")
+                ttk.Entry(motor_frame, textvariable=self.angle_vars[motor_id], 
+                         width=5, validate='key', 
+                         validatecommand=(self.root.register(self.validate_input), '%P')).pack(side='right', padx=2)
+            
+            col += 1
+            if col > 2:  # 3 columns layout
+                col = 0
+                row += 1
+        
+        # Keyframe control buttons
+        control_frame = ttk.Frame(editor_frame)
+        control_frame.pack(fill='x', pady=5)
+        
+        ttk.Button(control_frame, text="Add Keyframe", 
+                  command=self.add_keyframe).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Update Keyframe", 
+                  command=self.update_keyframe).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Delete Keyframe", 
+                  command=self.delete_keyframe).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Test Keyframe", 
+                  command=self.test_keyframe).pack(side='left', padx=2)
+        
+        # Instructions
+        ttk.Label(right_panel, text="Instructions:", style='Header.TLabel').pack(anchor='w', padx=5, pady=5)
+        instructions = """
+1. Create a new sequence or load an existing one
+2. Set the duration for the movement
+3. Set angles for the servos you want to move
+4. Add the keyframe to the sequence
+5. Repeat steps 2-4 for each position
+6. Save the sequence when done
+7. Use Play to test the sequence
 
-    def toggle_balancing(self):
-        """Toggle balancing mode"""
-        is_balancing = self.balance_var.get()
-        response = self.send_zmq_command('update_balance_params', {'is_balancing': is_balancing})
-        if response and response.get('status') == 'success':
-            state = "enabled" if is_balancing else "disabled"
-            self.add_to_monitor(f"Balancing {state}")
-        else:
-            self.add_to_monitor("Error toggling balance mode")
+Tips:
+- Leave angle empty to keep current position
+- Use Test Keyframe to preview position
+- Duration is the time to reach the position
+"""
+        ttk.Label(right_panel, text=instructions, justify='left').pack(fill='x', padx=5)
+
+    def new_sequence(self):
+        """Create a new keyframe sequence"""
+        self.current_sequence = []
+        self.keyframe_listbox.delete(0, tk.END)
+        self.sequence_name.set("New Sequence")
+        self.add_to_monitor("Created new sequence")
+
+    def add_keyframe(self):
+        """Add current angles as a keyframe"""
+        try:
+            duration = int(self.duration_var.get())
+            angles = {}
+            
+            # Collect only the angles that are specified
+            for motor_id, var in self.angle_vars.items():
+                if var.get().strip():  # Only add if value is specified
+                    angles[motor_id] = float(var.get())
+            
+            if angles:  # Only add if at least one angle is specified
+                keyframe = {
+                    'duration': duration,
+                    'angles': angles
+                }
+                self.current_sequence.append(keyframe)
+                self.keyframe_listbox.insert(tk.END, 
+                    f"Frame {len(self.current_sequence)}: {len(angles)} servos, {duration}ms")
+                self.add_to_monitor(f"Added keyframe with {len(angles)} servo positions")
+            else:
+                self.add_to_monitor("Error: No angles specified for keyframe")
+        except ValueError as e:
+            self.add_to_monitor(f"Error adding keyframe: {e}")
+
+    def update_keyframe(self):
+        """Update selected keyframe"""
+        selection = self.keyframe_listbox.curselection()
+        if not selection:
+            self.add_to_monitor("No keyframe selected")
+            return
+        
+        try:
+            index = selection[0]
+            duration = int(self.duration_var.get())
+            angles = {}
+            
+            for motor_id, var in self.angle_vars.items():
+                if var.get().strip():
+                    angles[motor_id] = float(var.get())
+            
+            if angles:
+                self.current_sequence[index] = {
+                    'duration': duration,
+                    'angles': angles
+                }
+                self.keyframe_listbox.delete(index)
+                self.keyframe_listbox.insert(index, 
+                    f"Frame {index + 1}: {len(angles)} servos, {duration}ms")
+                self.add_to_monitor(f"Updated keyframe {index + 1}")
+        except Exception as e:
+            self.add_to_monitor(f"Error updating keyframe: {e}")
+
+    def delete_keyframe(self):
+        """Delete selected keyframe"""
+        selection = self.keyframe_listbox.curselection()
+        if not selection:
+            self.add_to_monitor("No keyframe selected")
+            return
+        
+        index = selection[0]
+        self.current_sequence.pop(index)
+        self.keyframe_listbox.delete(index)
+        self.add_to_monitor(f"Deleted keyframe {index + 1}")
+
+    def test_keyframe(self):
+        """Test current keyframe settings"""
+        try:
+            angles = {}
+            for motor_id, var in self.angle_vars.items():
+                if var.get().strip():
+                    angles[motor_id] = float(var.get())
+            
+            if angles:
+                for motor_id, angle in angles.items():
+                    self.update_servo(motor_id, angle)
+                self.add_to_monitor("Testing keyframe positions")
+            else:
+                self.add_to_monitor("No angles specified to test")
+        except Exception as e:
+            self.add_to_monitor(f"Error testing keyframe: {e}")
+
+    def play_sequence(self):
+        """Play the current sequence"""
+        if not self.current_sequence:
+            self.add_to_monitor("No sequence to play")
+            return
+        
+        if self.sequence_running:
+            self.sequence_running = False
+            self.add_to_monitor("Stopping sequence")
+            return
+        
+        self.sequence_running = True
+        threading.Thread(target=self._play_sequence_thread, daemon=True).start()
+
+    def _play_sequence_thread(self):
+        """Thread function to play the sequence"""
+        try:
+            while self.sequence_running:
+                for frame in self.current_sequence:
+                    if not self.sequence_running:
+                        break
+                    
+                    for motor_id, angle in frame['angles'].items():
+                        self.update_servo(motor_id, angle)
+                    
+                    time.sleep(frame['duration'] / 1000.0)
+                
+                if not self.sequence_running:
+                    break
+        except Exception as e:
+            self.add_to_monitor(f"Error playing sequence: {e}")
+        finally:
+            self.sequence_running = False
+
+    def save_sequence(self):
+        """Save the current sequence to a file"""
+        if not self.current_sequence:
+            self.add_to_monitor("No sequence to save")
+            return
+        
+        try:
+            filename = f"sequences/{self.sequence_name.get()}.json"
+            os.makedirs("sequences", exist_ok=True)
+            
+            with open(filename, 'w') as f:
+                json.dump({
+                    'name': self.sequence_name.get(),
+                    'frames': self.current_sequence
+                }, f, indent=4)
+            
+            self.add_to_monitor(f"Saved sequence to {filename}")
+        except Exception as e:
+            self.add_to_monitor(f"Error saving sequence: {e}")
+
+    def load_sequence(self):
+        """Load a sequence from a file"""
+        try:
+            filename = filedialog.askopenfilename(
+                initialdir="sequences",
+                title="Select Sequence File",
+                filetypes=(("JSON files", "*.json"), ("all files", "*.*"))
+            )
+            
+            if filename:
+                with open(filename, 'r') as f:
+                    data = json.load(f)
+                
+                self.current_sequence = data['frames']
+                self.sequence_name.set(data['name'])
+                
+                self.keyframe_listbox.delete(0, tk.END)
+                for i, frame in enumerate(self.current_sequence):
+                    self.keyframe_listbox.insert(tk.END, 
+                        f"Frame {i + 1}: {len(frame['angles'])} servos, {frame['duration']}ms")
+                
+                self.add_to_monitor(f"Loaded sequence from {filename}")
+        except Exception as e:
+            self.add_to_monitor(f"Error loading sequence: {e}")
 
 def main():
     root = tk.Tk()
+    print("Root created")
     app = HexapodGUI(root)
+    print("App created")
     root.mainloop()
+    print("Mainloop started")
+    
 
 if __name__ == "__main__":
     main()
