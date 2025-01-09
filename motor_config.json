@@ -22,7 +22,8 @@
         "R3": 0.0
     },
     "dc_motors": {
-        "LDC": 0
+        "LDC": 0,
+        "RDC": 0
     },
     "offsets": {
         "L1": 0,

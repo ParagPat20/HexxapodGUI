@@ -9,6 +9,142 @@ import json
 import os
 from tkinter import filedialog
 
+class KeyframePopup:
+    def __init__(self, parent, motor_groups, update_servo_callback):
+        self.window = tk.Toplevel(parent)
+        self.window.title("Add Keyframe")
+        # self.window.geometry("600x800")
+        
+        self.motor_groups = motor_groups
+        self.update_servo = update_servo_callback
+        self.servo_entries = {}
+        self.dc_entries = {}
+        
+        # Create main container with scrollbar
+        container = ttk.Frame(self.window)
+        container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Create canvas for scrolling
+        canvas = tk.Canvas(container)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas)
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Duration control
+        duration_frame = ttk.LabelFrame(self.scrollable_frame, text="Duration")
+        duration_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(duration_frame, text="Duration (ms):").pack(side='left', padx=5)
+        self.duration_var = tk.StringVar(value="1000")
+        ttk.Entry(duration_frame, textvariable=self.duration_var, width=10).pack(side='left', padx=5)
+        
+        # DC Motors control
+        dc_frame = ttk.LabelFrame(self.scrollable_frame, text="DC Motors")
+        dc_frame.pack(fill='x', padx=5, pady=5)
+        
+        dc_motors = {
+            'LDC': 'Left DC Motor',
+            'RDC': 'Right DC Motor'
+        }
+        
+        for motor_id, motor_name in dc_motors.items():
+            motor_frame = ttk.Frame(dc_frame)
+            motor_frame.pack(fill='x', pady=2)
+            
+            ttk.Label(motor_frame, text=f"{motor_name}:").pack(side='left', padx=5)
+            value_var = tk.StringVar(value="0")
+            self.dc_entries[motor_id] = value_var
+            entry = ttk.Entry(motor_frame, textvariable=value_var, width=8)
+            entry.pack(side='left', padx=5)
+            
+            # Add test button
+            ttk.Button(motor_frame, text="Test",
+                      command=lambda m=motor_id, v=value_var: self.test_dc_motor(m, v)).pack(side='left', padx=5)
+        
+        # Servo Motors by group
+        for group_name, motors in self.motor_groups.items():
+            group_frame = ttk.LabelFrame(self.scrollable_frame, text=group_name.replace('_', ' ').title())
+            group_frame.pack(fill='x', padx=5, pady=5)
+            
+            for motor_id, motor_name in motors.items():
+                motor_frame = ttk.Frame(group_frame)
+                motor_frame.pack(fill='x', pady=2)
+                
+                ttk.Label(motor_frame, text=f"{motor_name} ({motor_id}):").pack(side='left', padx=5)
+                value_var = tk.StringVar(value="")
+                self.servo_entries[motor_id] = value_var
+                entry = ttk.Entry(motor_frame, textvariable=value_var, width=8)
+                entry.pack(side='left', padx=5)
+                
+                # Add test button
+                ttk.Button(motor_frame, text="Test",
+                          command=lambda m=motor_id, v=value_var: self.test_servo(m, v)).pack(side='left', padx=5)
+        
+        # Control buttons
+        button_frame = ttk.Frame(self.scrollable_frame)
+        button_frame.pack(fill='x', pady=10)
+        
+        ttk.Button(button_frame, text="Add Keyframe", command=self.add_keyframe).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Cancel", command=self.window.destroy).pack(side='left', padx=5)
+        
+        self.result = None
+        
+    def test_servo(self, motor_id, value_var):
+        """Test a servo motor position"""
+        try:
+            if value_var.get().strip():
+                angle = float(value_var.get())
+                self.update_servo(motor_id, angle)
+        except ValueError:
+            pass
+    
+    def test_dc_motor(self, motor_id, value_var):
+        """Test a DC motor speed"""
+        try:
+            if value_var.get().strip():
+                speed = float(value_var.get())
+                self.update_servo(motor_id, speed)
+        except ValueError:
+            pass
+    
+    def add_keyframe(self):
+        """Collect all values and create keyframe"""
+        try:
+            duration = int(self.duration_var.get())
+            
+            # Collect servo angles
+            angles = {}
+            for motor_id, var in self.servo_entries.items():
+                if var.get().strip():
+                    angles[motor_id] = float(var.get())
+            
+            # Collect DC motor speeds
+            dc_speeds = {}
+            for motor_id, var in self.dc_entries.items():
+                if var.get().strip():
+                    dc_speeds[motor_id] = float(var.get())
+            
+            self.result = {
+                'duration': duration,
+                'angles': angles,
+                'dc_speeds': dc_speeds
+            }
+            
+            self.window.destroy()
+        except ValueError:
+            pass
+
 class HexapodGUI:
     def __init__(self, root):
         self.root = root
@@ -17,7 +153,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.146.192:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.8.192:5555")  # Replace with your RPI's IP
         
         # Initialize config handlers for both configs
         self.config_handler = ConfigHandler()
@@ -71,36 +207,36 @@ class HexapodGUI:
         # Motor grouping
         self.motor_groups = {
             'left_front': {
-                "L1": "Front Leg",
-                "L2": "Front Lower",
-                "L3": "Front Middle"
+                "L1": "Coxa",    # Front Leg
+                "L2": "Femur",   # Front Mid
+                "L3": "Tibia"    # Front Lower
             },
             'left_center': {
-                "L5": "Center Upper",
-                "L6": "Center Lower 2",
-                "L7": "Center Lower",
-                "L8": "Center Leg"
+                "L8": "Coxa",      # Center Leg
+                "L5": "Femur2",    # Center Upper
+                "L6": "Femur",     # Center Lower 2
+                "L7": "Tibia"      # Center Lower
             },
             'left_back': {
-                "L9": "Back Mid",
-                "L10": "Back Lower",
-                "L12": "Back Leg"
+                "L12": "Coxa",   # Back Leg
+                "L9": "Femur",   # Back Mid
+                "L10": "Tibia"   # Back Lower
             },
             'right_front': {
-                "R14": "Front Lower",
-                "R15": "Front Mid",
-                "R16": "Front Leg"
+                "R16": "Coxa",   # Front Leg
+                "R15": "Femur",  # Front Mid
+                "R14": "Tibia"   # Front Lower
             },
             'right_center': {
-                "R6": "Center Upper",
-                "R8": "Center Leg",
-                "R10": "Center Lower 2",
-                "R12": "Center Lower"
+                "R8": "Coxa",     # Center Leg
+                "R6": "Femur2",   # Center Upper
+                "R10": "Femur",   # Center Lower 2
+                "R12": "Tibia"    # Center Lower
             },
             'right_back': {
-                "R1": "Back Lower",
-                "R2": "Back Mid",
-                "R3": "Back Leg"
+                "R3": "Coxa",    # Back Leg
+                "R2": "Femur",   # Back Mid
+                "R1": "Tibia"    # Back Lower
             }
         }
         
@@ -186,10 +322,13 @@ class HexapodGUI:
             
             ttk.Label(motor_frame, text=motor_name).pack(side='left', padx=5)
             
-            # Create slider
-            slider = ttk.Scale(motor_frame, from_=-255, to=255, orient='horizontal')
-            # Set initial value from config
+            # Create slider with 50-unit increments
+            slider = ttk.Scale(motor_frame, from_=-250, to=250, orient='horizontal')
+            slider.configure(command=lambda v, s=slider: self._snap_to_increment(s, float(v), 50))
+            
+            # Set initial value from config (rounded to nearest 50)
             initial_value = self.motor_values['dc_motors'].get(motor_id, 0)
+            initial_value = round(initial_value / 50) * 50  # Round to nearest 50
             slider.set(initial_value)
             slider.pack(side='left', fill='x', expand=True, padx=5)
             
@@ -200,12 +339,54 @@ class HexapodGUI:
             entry.pack(side='left', padx=5)
             
             # Connect slider and entry
-            slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
-                            self._on_dc_slider_change(v, var, e, m))
+            slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id, s=slider: 
+                            self._on_dc_slider_change(v, var, e, m, s))
             slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider: 
                         self.update_dc_motor(m, float(s.get())))
             entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id: 
                         self._on_dc_entry_change(e, s, var, ent, m))
+
+    def _snap_to_increment(self, slider, value, increment):
+        """Snap slider value to nearest increment"""
+        snapped = round(float(value) / increment) * increment
+        if float(slider.get()) != snapped:
+            slider.set(snapped)
+        return snapped
+
+    def _on_dc_slider_change(self, value, value_var, entry, motor_id, slider):
+        """Handle slider value changes for DC motor control"""
+        try:
+            # Snap to nearest 50
+            value = self._snap_to_increment(slider, float(value), 50)
+            value_var.set(f"{value:.0f}")
+            entry.delete(0, tk.END)
+            entry.insert(0, f"{value:.0f}")
+        except ValueError:
+            pass
+
+    def _on_dc_entry_change(self, event, slider, value_var, entry, motor_id):
+        """Handle entry value changes for DC motor control"""
+        try:
+            value = float(entry.get())
+            # Snap to nearest 50
+            value = round(value / 50) * 50
+            value = max(-250, min(250, value))  # Clamp value
+            slider.set(value)
+            value_var.set(f"{value:.0f}")
+            
+            # Update the motor
+            self.update_dc_motor(motor_id, value)
+        except ValueError:
+            pass
+
+    def update_dc_motor(self, motor_id, value):
+        """Send DC motor update command and save to config"""
+        self.send_zmq_command('update_motor', {
+            'motor_id': motor_id,
+            'value': int(value)
+        })
+        self.motor_values['dc_motors'][motor_id] = int(value)
+        self.config_handler.save_config(self.motor_values)
 
     def create_servo_motor_controls(self, parent):
         """Create servo motor control interface"""
@@ -331,90 +512,6 @@ class HexapodGUI:
             'motor_id': motor_id,
             'value': int(adjusted_value)
         })
-
-    def _on_dc_slider_change(self, value, value_var, entry, motor_id):
-        """Handle slider value changes for DC motor control"""
-        try:
-            value = float(value)
-            value_var.set(f"{value:.1f}")
-            entry.delete(0, tk.END)
-            entry.insert(0, f"{value:.1f}")
-        except ValueError:
-            pass
-
-    def _on_dc_entry_change(self, event, slider, value_var, entry, motor_id):
-        """Handle entry value changes for DC motor control"""
-        try:
-            value = float(entry.get())
-            value = max(-255, min(255, value))  # Clamp value
-            slider.set(value)
-            value_var.set(f"{value:.1f}")
-            
-            # Update the motor
-            self.update_dc_motor(motor_id, value)
-        except ValueError:
-            pass
-
-    def update_dc_motor(self, motor_id, value):
-        """Send DC motor update command and save to config"""
-        self.send_zmq_command('update_motor', {
-            'motor_id': motor_id,
-            'value': int(value)
-        })
-        self.motor_values['dc_motors'][motor_id] = int(value)
-        self.config_handler.save_config(self.motor_values)
-
-    def handle_movement(self, direction):
-        """Handle movement commands"""
-        try:
-            # Speed levels
-            SPEED_LOW = 50
-            SPEED_MED = 100
-            SPEED_HIGH = 200
-            
-            if direction == 'forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'forward_fast':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_HIGH})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_HIGH})
-            elif direction == 'forward_slow':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
-            elif direction == 'backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'backward_fast':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_HIGH})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_HIGH})
-            elif direction == 'backward_slow':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
-            elif direction == 'left':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'right':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'rotate_left':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
-            elif direction == 'rotate_right':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
-            elif direction == 'left_motor_forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-            elif direction == 'left_motor_backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-            elif direction == 'right_motor_forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'right_motor_backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'stop':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
-        except Exception as e:
-            print(f"Error in movement control: {e}")
 
     def create_balance_control_panel(self, parent):
         """Create movement control interface"""
@@ -782,108 +879,61 @@ Note:
         container = ttk.Frame(parent)
         container.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Left panel for sequence controls
-        left_panel = ttk.LabelFrame(container, text="Sequence Controls")
-        left_panel.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
-        # Right panel for keyframe editor
-        right_panel = ttk.LabelFrame(container, text="Keyframe Editor")
-        right_panel.pack(side='right', fill='both', expand=True, padx=5, pady=5)
-        
         # Sequence Controls
-        sequence_frame = ttk.Frame(left_panel)
-        sequence_frame.pack(fill='x', padx=5, pady=5)
+        sequence_frame = ttk.LabelFrame(container, text="Sequence Controls")
+        sequence_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        ttk.Label(sequence_frame, text="Sequence Name:").pack(side='left', padx=5)
+        # Sequence name
+        name_frame = ttk.Frame(sequence_frame)
+        name_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(name_frame, text="Sequence Name:").pack(side='left', padx=5)
         self.sequence_name = tk.StringVar(value="New Sequence")
-        ttk.Entry(sequence_frame, textvariable=self.sequence_name).pack(side='left', fill='x', expand=True, padx=5)
+        ttk.Entry(name_frame, textvariable=self.sequence_name).pack(side='left', fill='x', expand=True, padx=5)
         
-        # Buttons for sequence control
-        btn_frame = ttk.Frame(left_panel)
+        # Buttons frame
+        btn_frame = ttk.Frame(sequence_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
         
-        ttk.Button(btn_frame, text="New Sequence", 
-                  command=self.new_sequence).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="Save Sequence", 
-                  command=self.save_sequence).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="Load Sequence", 
-                  command=self.load_sequence).pack(side='left', padx=2)
-        ttk.Button(btn_frame, text="Play Sequence", 
-                  command=self.play_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="New Sequence", command=self.new_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Add Keyframe", command=self.show_keyframe_popup).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Save Sequence", command=self.save_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Load Sequence", command=self.load_sequence).pack(side='left', padx=2)
+        ttk.Button(btn_frame, text="Play Sequence", command=self.play_sequence).pack(side='left', padx=2)
         
         # Keyframe list
-        ttk.Label(left_panel, text="Keyframes:").pack(anchor='w', padx=5)
-        self.keyframe_listbox = tk.Listbox(left_panel, height=10)
+        list_frame = ttk.LabelFrame(sequence_frame, text="Keyframes")
+        list_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.keyframe_listbox = tk.Listbox(list_frame, height=15)
         self.keyframe_listbox.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Keyframe Editor
-        editor_frame = ttk.Frame(right_panel)
-        editor_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Time control
-        time_frame = ttk.Frame(editor_frame)
-        time_frame.pack(fill='x', pady=5)
-        ttk.Label(time_frame, text="Duration (ms):").pack(side='left', padx=5)
-        self.duration_var = tk.StringVar(value="1000")
-        ttk.Entry(time_frame, textvariable=self.duration_var, width=10).pack(side='left', padx=5)
-        
-        # Servo angle controls
-        angle_frame = ttk.LabelFrame(editor_frame, text="Servo Angles")
-        angle_frame.pack(fill='both', expand=True, pady=5)
-        
-        # Create servo angle controls by leg groups
-        self.angle_vars = {}
-        row = 0
-        col = 0
-        for leg_group, motors in self.motor_groups.items():
-            group_frame = ttk.LabelFrame(angle_frame, text=leg_group.replace('_', ' ').title())
-            group_frame.grid(row=row, column=col, padx=5, pady=5, sticky='nsew')
-            
-            for motor_id, motor_name in motors.items():
-                motor_frame = ttk.Frame(group_frame)
-                motor_frame.pack(fill='x', pady=2)
-                
-                ttk.Label(motor_frame, text=f"{motor_name}:").pack(side='left', padx=2)
-                self.angle_vars[motor_id] = tk.StringVar(value="0")
-                ttk.Entry(motor_frame, textvariable=self.angle_vars[motor_id], 
-                         width=5, validate='key', 
-                         validatecommand=(self.root.register(self.validate_input), '%P')).pack(side='right', padx=2)
-            
-            col += 1
-            if col > 2:  # 3 columns layout
-                col = 0
-                row += 1
-        
         # Keyframe control buttons
-        control_frame = ttk.Frame(editor_frame)
+        control_frame = ttk.Frame(list_frame)
         control_frame.pack(fill='x', pady=5)
         
-        ttk.Button(control_frame, text="Add Keyframe", 
-                  command=self.add_keyframe).pack(side='left', padx=2)
-        ttk.Button(control_frame, text="Update Keyframe", 
-                  command=self.update_keyframe).pack(side='left', padx=2)
-        ttk.Button(control_frame, text="Delete Keyframe", 
-                  command=self.delete_keyframe).pack(side='left', padx=2)
-        ttk.Button(control_frame, text="Test Keyframe", 
-                  command=self.test_keyframe).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Delete Keyframe", command=self.delete_keyframe).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Move Up", command=lambda: self.move_keyframe(-1)).pack(side='left', padx=2)
+        ttk.Button(control_frame, text="Move Down", command=lambda: self.move_keyframe(1)).pack(side='left', padx=2)
         
         # Instructions
-        ttk.Label(right_panel, text="Instructions:", style='Header.TLabel').pack(anchor='w', padx=5, pady=5)
         instructions = """
-1. Create a new sequence or load an existing one
-2. Set the duration for the movement
-3. Set angles for the servos you want to move
-4. Add the keyframe to the sequence
-5. Repeat steps 2-4 for each position
-6. Save the sequence when done
-7. Use Play to test the sequence
+Instructions:
+1. Enter a sequence name
+2. Click 'Add Keyframe' to add a new position
+3. In the popup, set servo angles and DC motor speeds
+4. Use 'Test' buttons to preview positions
+5. Click 'Add Keyframe' in popup to add to sequence
+6. Arrange keyframes using Move Up/Down
+7. Save sequence when done
+8. Use Play to test the sequence
 
 Tips:
-- Leave angle empty to keep current position
-- Use Test Keyframe to preview position
+- Leave values empty to keep current position
+- Use Test buttons to preview positions
 - Duration is the time to reach the position
 """
-        ttk.Label(right_panel, text=instructions, justify='left').pack(fill='x', padx=5)
+        ttk.Label(sequence_frame, text=instructions, justify='left').pack(fill='x', padx=5, pady=5)
 
     def new_sequence(self):
         """Create a new keyframe sequence"""
@@ -996,8 +1046,13 @@ Tips:
                     if not self.sequence_running:
                         break
                     
+                    # Update servo positions
                     for motor_id, angle in frame['angles'].items():
                         self.update_servo(motor_id, angle)
+                    
+                    # Update DC motor speeds
+                    for motor_id, speed in frame['dc_speeds'].items():
+                        self.update_dc_motor(motor_id, speed)
                     
                     time.sleep(frame['duration'] / 1000.0)
                 
@@ -1007,6 +1062,8 @@ Tips:
             self.add_to_monitor(f"Error playing sequence: {e}")
         finally:
             self.sequence_running = False
+            # Return to standby position when sequence ends
+            self.enter_standby()
 
     def save_sequence(self):
         """Save the current sequence to a file"""
@@ -1053,14 +1110,44 @@ Tips:
         except Exception as e:
             self.add_to_monitor(f"Error loading sequence: {e}")
 
+    def show_keyframe_popup(self):
+        """Show popup for adding a keyframe"""
+        popup = KeyframePopup(self.root, self.motor_groups, self.update_servo)
+        self.root.wait_window(popup.window)
+        
+        if popup.result:
+            self.current_sequence.append(popup.result)
+            frame_num = len(self.current_sequence)
+            servo_count = len(popup.result['angles'])
+            dc_count = len(popup.result['dc_speeds'])
+            self.keyframe_listbox.insert(tk.END, 
+                f"Frame {frame_num}: {servo_count} servos, {dc_count} DC motors, {popup.result['duration']}ms")
+            self.add_to_monitor(f"Added keyframe with {servo_count} servo positions and {dc_count} DC motor speeds")
+
+    def move_keyframe(self, direction):
+        """Move selected keyframe up or down"""
+        selection = self.keyframe_listbox.curselection()
+        if not selection:
+            return
+        
+        index = selection[0]
+        new_index = index + direction
+        
+        if 0 <= new_index < self.keyframe_listbox.size():
+            # Move in sequence list
+            frame = self.current_sequence.pop(index)
+            self.current_sequence.insert(new_index, frame)
+            
+            # Move in listbox
+            text = self.keyframe_listbox.get(index)
+            self.keyframe_listbox.delete(index)
+            self.keyframe_listbox.insert(new_index, text)
+            self.keyframe_listbox.selection_set(new_index)
+
 def main():
     root = tk.Tk()
-    print("Root created")
     app = HexapodGUI(root)
-    print("App created")
     root.mainloop()
-    print("Mainloop started")
-    
 
 if __name__ == "__main__":
     main()

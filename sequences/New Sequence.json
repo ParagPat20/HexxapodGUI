@@ -1,0 +1,13 @@
+{
+    "name": "New Sequence",
+    "frames": [
+        {
+            "duration": 1000,
+            "angles": {},
+            "dc_speeds": {
+                "LDC": 0.0,
+                "RDC": 0.0
+            }
+        }
+    ]
+}
