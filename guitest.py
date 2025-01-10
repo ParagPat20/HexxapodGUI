@@ -169,41 +169,6 @@ class HexapodGUI:
         # Create serial monitor first (since other methods might need to log messages)
         self.create_serial_monitor()
         
-        # Define standby angles for stable standing position
-        self.standby_angles = {
-            # Left Front Leg
-            'L1': 0.0,   # Hip centered
-            'L2': 45.0,  # Knee bent for stability
-            'L3': 115.0,   # Ankle angled for ground contact
-            
-            # Left Center Leg
-            'L5': 50.0,   # Hip centered
-            'L6': 180.0,  # Knee bent
-            'L7': 90.0,   # Ankle angled
-            'L8': 0.0,   # Extra joint centered
-            
-            # Left Back Leg
-            'L9': 115.0,   # Hip centered
-            'L10': 45.0, # Knee bent
-            'L12': 0.0,  # Ankle angled
-            
-            # Right Front Leg
-            'R14': 45.0, # Knee bent
-            'R15': 115.0,  # Hip centered
-            'R16': 0.0,  # Ankle angled
-            
-            # Right Center Leg
-            'R6': 50.0,   # Hip centered
-            'R8': 0.0,   # Ankle angled
-            'R10': 180.0, # Knee bent
-            'R12': 90.0,  # Extra joint centered
-            
-            # Right Back Leg
-            'R1': 45.0,  # Knee bent
-            'R2': 115.0,   # Hip centered   
-            'R3': 0.0    # Ankle angled
-        }
-        
         # Motor grouping
         self.motor_groups = {
             'left_front': {
@@ -467,10 +432,11 @@ class HexapodGUI:
     def _on_servo_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for servo control"""
         try:
-            value = float(value)
-            value_var.set(f"{value:.1f}")
+            # Round to nearest integer for 1-degree increments
+            value = round(float(value))
+            value_var.set(f"{value}")
             entry.delete(0, tk.END)
-            entry.insert(0, f"{value:.1f}")
+            entry.insert(0, f"{value}")
             
             # Send the raw value to update_servo
             self.update_servo(motor_id, value)
@@ -480,10 +446,10 @@ class HexapodGUI:
     def _on_servo_entry_change(self, event, slider, value_var, entry, motor_id):
         """Handle entry value changes for servo control"""
         try:
-            value = float(entry.get())
+            value = round(float(entry.get()))  # Round to nearest integer
             value = max(0, min(180, value))  # Clamp value
             slider.set(value)
-            value_var.set(f"{value:.1f}")
+            value_var.set(f"{value}")
             
             # Send the raw value to update_servo
             self.update_servo(motor_id, value)
@@ -610,24 +576,26 @@ class HexapodGUI:
         # Add instructions to right frame
         ttk.Label(right_frame, text="Keyboard Controls:", style='Header.TLabel').pack(pady=5)
         controls_text = """
-Movement Controls:
+DC MOTOR Controls:
 W/S: Forward/Backward
 A/D: Turn Left/Right
 Q/E: Rotate Left/Right
 Space: Emergency Stop
 
 Speed Controls:
-Shift + W/S: Fast Forward/Backward
-Ctrl + W/S: Slow Forward/Backward
-Normal W/S: Medium Speed
+T/G: Fast Forward/Backward
+R/F: Slow Forward/Backward
 
-Individual Motor Controls:
+Individual Motor Controls (Normal Speed):
 U/J: Left Motor Forward/Backward
 I/K: Right Motor Forward/Backward
 
+Individual Motor Controls (Fast Speed):
+7/8: Left Motor Fast Forward/Backward
+9/0: Right Motor Fast Forward/Backward
+
 Note: 
 - All motors stop automatically when keys are released
-- Use Shift/Ctrl for speed control
 - Individual motor controls help in fine adjustments
 """
         ttk.Label(right_frame, text=controls_text, justify='left').pack(padx=10, pady=5)
@@ -837,33 +805,34 @@ Note:
 
     def setup_keyboard_controls(self):
         """Setup keyboard controls for movement"""
-        # Main movement controls
+        # Main movement controls (medium speed)
         self.root.bind('<KeyPress-w>', lambda e: self.handle_movement('forward'))
         self.root.bind('<KeyPress-s>', lambda e: self.handle_movement('backward'))
         self.root.bind('<KeyPress-a>', lambda e: self.handle_movement('left'))
         self.root.bind('<KeyPress-d>', lambda e: self.handle_movement('right'))
         self.root.bind('<KeyPress-space>', lambda e: self.handle_movement('stop'))
         
-        # Speed variations with Shift key
-        self.root.bind('<Shift-W>', lambda e: self.handle_movement('forward_fast'))
-        self.root.bind('<Shift-S>', lambda e: self.handle_movement('backward_fast'))
-        
-        # Speed variations with Control key
-        self.root.bind('<Control-w>', lambda e: self.handle_movement('forward_slow'))
-        self.root.bind('<Control-s>', lambda e: self.handle_movement('backward_slow'))
+        # Fast speed controls
+        self.root.bind('<KeyPress-t>', lambda e: self.handle_movement('forward_fast'))
+        self.root.bind('<KeyPress-g>', lambda e: self.handle_movement('backward_fast'))
         
         # Rotation controls
         self.root.bind('<KeyPress-q>', lambda e: self.handle_movement('rotate_left'))
         self.root.bind('<KeyPress-e>', lambda e: self.handle_movement('rotate_right'))
         
-        # Individual motor controls
+        # Individual motor controls - Normal Speed
         self.root.bind('<KeyPress-u>', lambda e: self.handle_movement('left_motor_forward'))
         self.root.bind('<KeyPress-j>', lambda e: self.handle_movement('left_motor_backward'))
         self.root.bind('<KeyPress-i>', lambda e: self.handle_movement('right_motor_forward'))
         self.root.bind('<KeyPress-k>', lambda e: self.handle_movement('right_motor_backward'))
         
+        # Individual motor controls - Fast Speed
+        self.root.bind('<KeyPress-r>', lambda e: self.handle_movement('alt_motor_forward_fast'))
+        self.root.bind('<KeyPress-f>', lambda e: self.handle_movement('alt_motor_backward_fast'))
+
+        
         # Stop on key release for all movement keys
-        movement_keys = ['w', 's', 'a', 'd', 'q', 'e', 'u', 'j', 'i', 'k']
+        movement_keys = ['w', 's', 'a', 'd', 'q', 'e', 'u', 'j', 'i', 'k', 't', 'g', 'r', 'f', '7', '8', '9', '0']
         for key in movement_keys:
             self.root.bind(f'<KeyRelease-{key}>', lambda e: self.handle_movement('stop'))
             self.root.bind(f'<KeyRelease-{key.upper()}>', lambda e: self.handle_movement('stop'))
@@ -1039,31 +1008,31 @@ Tips:
         threading.Thread(target=self._play_sequence_thread, daemon=True).start()
 
     def _play_sequence_thread(self):
-        """Thread function to play the sequence"""
+        """Thread function to play the sequence once"""
         try:
-            while self.sequence_running:
-                for frame in self.current_sequence:
-                    if not self.sequence_running:
-                        break
-                    
-                    # Update servo positions
-                    for motor_id, angle in frame['angles'].items():
-                        self.update_servo(motor_id, angle)
-                    
-                    # Update DC motor speeds
-                    for motor_id, speed in frame['dc_speeds'].items():
-                        self.update_dc_motor(motor_id, speed)
-                    
-                    time.sleep(frame['duration'] / 1000.0)
-                
+            # Play sequence only once
+            for frame in self.current_sequence:
                 if not self.sequence_running:
                     break
+                
+                # Update servo positions
+                for motor_id, angle in frame['angles'].items():
+                    self.update_servo(motor_id, angle)
+                
+                # Update DC motor speeds
+                for motor_id, speed in frame['dc_speeds'].items():
+                    self.update_dc_motor(motor_id, speed)
+                
+                time.sleep(frame['duration'] / 1000.0)
+            
+            # Return to standby position when sequence ends
+            self.enter_standby()
+            
         except Exception as e:
             self.add_to_monitor(f"Error playing sequence: {e}")
         finally:
             self.sequence_running = False
-            # Return to standby position when sequence ends
-            self.enter_standby()
+            self.add_to_monitor("Sequence completed")
 
     def save_sequence(self):
         """Save the current sequence to a file"""
@@ -1180,6 +1149,7 @@ Tips:
         elif command == 'rotate_right':
             left_speed = MEDIUM_SPEED
             right_speed = -MEDIUM_SPEED
+        # Individual motor controls - Normal Speed
         elif command == 'left_motor_forward':
             left_speed = MEDIUM_SPEED
         elif command == 'left_motor_backward':
@@ -1188,6 +1158,13 @@ Tips:
             right_speed = MEDIUM_SPEED
         elif command == 'right_motor_backward':
             right_speed = -MEDIUM_SPEED
+        # Individual motor controls - Fast Speed
+        elif command == 'alt_motor_forward_fast':
+            left_speed = FAST_SPEED
+            right_speed = -FAST_SPEED
+        elif command == 'alt_motor_backward_fast':
+            left_speed = -FAST_SPEED
+            right_speed = FAST_SPEED
         elif command == 'stop':
             left_speed = right_speed = 0
             
