@@ -1,4 +1,9 @@
-import pyrealsense2 as rs
+try:
+    import pyrealsense2 as rs
+except ImportError:
+    import subprocess
+    subprocess.check_call(["python", '-m', 'pip', 'install', 'pyrealsense2'])
+    import pyrealsense2 as rs
 import numpy as np
 import time
 import threading
