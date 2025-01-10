@@ -1,0 +1,17 @@
+{
+    "pid": {
+        "Kp": 2.0,
+        "Ki": 0.0,
+        "Kd": 0.0
+    },
+    "balance": {
+        "max_speed": 255,
+        "min_speed": -255,
+        "calibration_speed": 50,
+        "calibration_time": 0.5
+    },
+    "imu": {
+        "pitch_offset": 0.0,
+        "gyro_weight": 0.0
+    }
+}

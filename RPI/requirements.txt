@@ -1,4 +1,5 @@
 numpy>=1.21.0
 pyserial>=3.5
 pyzmq>=24.0.0
-matplotlib>=3.5.0  # For simulation visualization if needed 
+matplotlib>=3.5.0  # For simulation visualization if needed
+pyrealsense2>=2.50.0  # For Intel RealSense camera support 
