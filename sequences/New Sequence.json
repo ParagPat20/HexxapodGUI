@@ -1,110 +1,12 @@
 {
-    "name": "Stand Up Sequence",
+    "name": "New Sequence",
     "frames": [
         {
             "duration": 1000,
-            "angles": {
-                "L12": 0.0,
-                "L9": 115.0,
-                "L10": 45.0
-            },
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 1000,
-            "angles": {
-                "L8": 0.0,
-                "L5": 50.0,
-                "L6": 180.0,
-                "L7": 90.0
-            },
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 800,
             "angles": {},
             "dc_speeds": {
-                "LDC": 100,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 1000,
-            "angles": {
-                "L1": 0.0,
-                "L2": 45.0,
-                "L3": 115.0
-            },
-            "dc_speeds": {
-                "LDC": 100,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 800,
-            "angles": {},
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 1000,
-            "angles": {
-                "R3": 0.0,
-                "R2": 115.0,
-                "R1": 45.0
-            },
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 1000,
-            "angles": {
-                "R8": 0.0,
-                "R6": 50.0,
-                "R10": 180.0,
-                "R12": 90.0
-            },
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
-            }
-        },
-        {
-            "duration": 800,
-            "angles": {},
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 100
-            }
-        },
-        {
-            "duration": 1000,
-            "angles": {
-                "R16": 0.0,
-                "R15": 115.0,
-                "R14": 45.0
-            },
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 100
-            }
-        },
-        {
-            "duration": 800,
-            "angles": {},
-            "dc_speeds": {
-                "LDC": 0,
-                "RDC": 0
+                "LDC": 0.0,
+                "RDC": 0.0
             }
         }
     ]

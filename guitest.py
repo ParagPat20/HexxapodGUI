@@ -153,7 +153,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.8.39:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.8.192:5555")  # Replace with your RPI's IP
         
         # Initialize config handlers for both configs
         self.config_handler = ConfigHandler()
@@ -420,13 +420,10 @@ class HexapodGUI:
                 
                 ttk.Label(motor_frame, text=f"{motor_name} ({motor_id})").pack(side='left', padx=5)
                 
-                # Create slider with 1-degree increments
+                # Create slider
                 slider = ttk.Scale(motor_frame, from_=0, to=180, orient='horizontal')
-                slider.configure(command=lambda v, s=slider: self._snap_to_increment(s, float(v), 1))
-                
-                # Set initial value from config (rounded to nearest integer)
+                # Set initial value from config
                 initial_value = self.motor_values['servo_motors'].get(motor_id, 90)
-                initial_value = round(initial_value)  # Round to nearest integer
                 slider.set(initial_value)
                 slider.pack(side='left', fill='x', expand=True, padx=5)
                 
@@ -454,8 +451,8 @@ class HexapodGUI:
                           self.update_servo_with_offset(m, s.get(), o.get(), inv.get())).pack(side='left', padx=5)
                 
                 # Connect slider and entry
-                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id, s=slider: 
-                               self._on_servo_slider_change(v, var, e, m, s))
+                slider.configure(command=lambda v, var=value_var, e=entry, m=motor_id: 
+                               self._on_servo_slider_change(v, var, e, m))
                 slider.bind('<ButtonRelease-1>', lambda e, m=motor_id, s=slider, o=offset_var, inv=invert_var: 
                           self.update_servo_with_offset(m, float(s.get()), o.get(), inv.get()))
                 entry.bind('<Return>', lambda e, s=slider, var=value_var, ent=entry, m=motor_id, o=offset_var, inv=invert_var: 
@@ -467,14 +464,13 @@ class HexapodGUI:
         update_all_button = ttk.Button(scrollable_frame, text="Update All", command=self.update_all_servos)
         update_all_button.pack(pady=5)
 
-    def _on_servo_slider_change(self, value, value_var, entry, motor_id, slider):
+    def _on_servo_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for servo control"""
         try:
-            # Snap to nearest integer
-            value = self._snap_to_increment(slider, float(value), 1)
-            value_var.set(f"{value:.0f}")
+            value = float(value)
+            value_var.set(f"{value:.1f}")
             entry.delete(0, tk.END)
-            entry.insert(0, f"{value:.0f}")
+            entry.insert(0, f"{value:.1f}")
             
             # Send the raw value to update_servo
             self.update_servo(motor_id, value)
@@ -485,11 +481,9 @@ class HexapodGUI:
         """Handle entry value changes for servo control"""
         try:
             value = float(entry.get())
-            # Round to nearest integer
-            value = round(value)
             value = max(0, min(180, value))  # Clamp value
             slider.set(value)
-            value_var.set(f"{value:.0f}")
+            value_var.set(f"{value:.1f}")
             
             # Send the raw value to update_servo
             self.update_servo(motor_id, value)
@@ -1149,59 +1143,6 @@ Tips:
             self.keyframe_listbox.delete(index)
             self.keyframe_listbox.insert(new_index, text)
             self.keyframe_listbox.selection_set(new_index)
-
-    def handle_movement(self, direction):
-        """Handle movement commands"""
-        try:
-            # Speed levels
-            SPEED_LOW = 50
-            SPEED_MED = 100
-            SPEED_HIGH = 200
-            
-            if direction == 'forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'forward_fast':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_HIGH})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_HIGH})
-            elif direction == 'forward_slow':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
-            elif direction == 'backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'backward_fast':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_HIGH})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_HIGH})
-            elif direction == 'backward_slow':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
-            elif direction == 'left':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'right':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'rotate_left':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_LOW})
-            elif direction == 'rotate_right':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_LOW})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_LOW})
-            elif direction == 'left_motor_forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': SPEED_MED})
-            elif direction == 'left_motor_backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': -SPEED_MED})
-            elif direction == 'right_motor_forward':
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': SPEED_MED})
-            elif direction == 'right_motor_backward':
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': -SPEED_MED})
-            elif direction == 'stop':
-                self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': 0})
-                self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
-        except Exception as e:
-            print(f"Error in movement control: {e}")
-            self.add_to_monitor(f"Movement error: {e}")
 
 def main():
     root = tk.Tk()
