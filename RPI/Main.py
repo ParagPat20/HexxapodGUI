@@ -16,7 +16,7 @@ class HexapodServer:
         if platform.system() == 'Windows':
             serial_port = 'COM7'  # Update this to match your Windows COM port
         else:
-            serial_port = '/dev/ttyUSB0'  # Default for Raspberry Pi
+            serial_port = '/dev/ttyACM0'  # Default for Raspberry Pi
             
         self.serial_comm = SerialCommunicator(port=serial_port)
         self.running = True

@@ -153,7 +153,7 @@ class HexapodGUI:
         # Initialize ZMQ
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.8.192:5555")  # Replace with your RPI's IP
+        self.socket.connect("tcp://192.168.8.39:5555")  # Replace with your RPI's IP
         
         # Initialize config handlers for both configs
         self.config_handler = ConfigHandler()
@@ -208,8 +208,8 @@ class HexapodGUI:
         self.motor_groups = {
             'left_front': {
                 "L1": "Coxa",    # Front Leg
-                "L2": "Femur",   # Front Mid
-                "L3": "Tibia"    # Front Lower
+                "L3": "Femur",   # Front Mid
+                "L2": "Tibia"    # Front Lower
             },
             'left_center': {
                 "L8": "Coxa",      # Center Leg
@@ -1143,6 +1143,61 @@ Tips:
             self.keyframe_listbox.delete(index)
             self.keyframe_listbox.insert(new_index, text)
             self.keyframe_listbox.selection_set(new_index)
+
+    def handle_movement(self, command):
+        """Handle movement commands"""
+        # Default speeds
+        SLOW_SPEED = 50
+        MEDIUM_SPEED = 100
+        FAST_SPEED = 200
+        
+        # Initialize speeds for both motors
+        left_speed = 0
+        right_speed = 0
+        
+        # Handle different movement commands
+        if command == 'forward':
+            left_speed = right_speed = MEDIUM_SPEED
+        elif command == 'forward_fast':
+            left_speed = right_speed = FAST_SPEED
+        elif command == 'forward_slow':
+            left_speed = right_speed = SLOW_SPEED
+        elif command == 'backward':
+            left_speed = right_speed = -MEDIUM_SPEED
+        elif command == 'backward_fast':
+            left_speed = right_speed = -FAST_SPEED
+        elif command == 'backward_slow':
+            left_speed = right_speed = -SLOW_SPEED
+        elif command == 'left':
+            left_speed = -MEDIUM_SPEED
+            right_speed = MEDIUM_SPEED
+        elif command == 'right':
+            left_speed = MEDIUM_SPEED
+            right_speed = -MEDIUM_SPEED
+        elif command == 'rotate_left':
+            left_speed = -MEDIUM_SPEED
+            right_speed = MEDIUM_SPEED
+        elif command == 'rotate_right':
+            left_speed = MEDIUM_SPEED
+            right_speed = -MEDIUM_SPEED
+        elif command == 'left_motor_forward':
+            left_speed = MEDIUM_SPEED
+        elif command == 'left_motor_backward':
+            left_speed = -MEDIUM_SPEED
+        elif command == 'right_motor_forward':
+            right_speed = MEDIUM_SPEED
+        elif command == 'right_motor_backward':
+            right_speed = -MEDIUM_SPEED
+        elif command == 'stop':
+            left_speed = right_speed = 0
+            
+        # Send commands to motors
+        self.send_zmq_command('update_motor', {'motor_id': 'LDC', 'value': left_speed})
+        self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': right_speed})
+        
+        # Log the movement
+        if command != 'stop':
+            self.add_to_monitor(f"Movement: {command} (L:{left_speed}, R:{right_speed})")
 
 def main():
     root = tk.Tk()
