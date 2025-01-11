@@ -22,7 +22,7 @@ class HexapodServer:
         self.running = True
         
         # Add debug flag
-        self.debug = False
+        self.debug = True  # Enable debug logging
         
         print(f"Hexapod server started on port {zmq_port}")
     
@@ -39,8 +39,12 @@ class HexapodServer:
             command_type = message.get('type')
             data = message.get('data')
             
+            self.log(f"Received command: {command_type} with data: {data}")
+            
             if command_type == 'update_motor':
-                return self.handle_motor_update(data)
+                result = self.handle_motor_update(data)
+                self.log(f"Motor update result: {result}")
+                return result
             else:
                 return {
                     'status': 'error',
@@ -48,6 +52,7 @@ class HexapodServer:
                 }
             
         except Exception as e:
+            self.log(f"Error handling command: {str(e)}")
             return {
                 'status': 'error',
                 'message': f'Error executing command: {str(e)}'
@@ -55,51 +60,78 @@ class HexapodServer:
 
     def handle_motor_update(self, data):
         """Handle motor update commands"""
-        motor_id = data.get('motor_id')
-        value = data.get('value')
-        
-        if motor_id and value is not None:
-            # Handle DC motor commands (LDC and RDC)
-            if motor_id in ['LDC', 'RDC']:
-                value = max(-255, min(255, int(value)))
-                result = self.serial_comm.send_command(motor_id, value)
-                if result['status'] == 'success':
-                    print(f"DC Motor {motor_id} updated to speed {value}")
-                    return {'status': 'success', 'message': f'DC Motor {motor_id} updated to speed {value}'}
-            else:
-                # Handle servo motor commands
-                value = max(0, min(180, float(value)))
-                result = self.serial_comm.send_command(motor_id, int(value))
-                if result['status'] == 'success':
-                    print(f"Servo Motor {motor_id} updated to position {value}")
-                    return {'status': 'success', 'message': f'Servo Motor {motor_id} updated to position {value}'}
+        try:
+            motor_id = data.get('motor_id')
+            value = data.get('value')
             
-            return result
-        else:
+            self.log(f"Processing motor update: {motor_id} = {value}")
+            
+            if motor_id and value is not None:
+                # Handle DC motor commands (LDC and RDC)
+                if motor_id in ['LDC', 'RDC']:
+                    value = max(-255, min(255, int(value)))
+                    result = self.serial_comm.send_command(motor_id, value)
+                    if result['status'] == 'success':
+                        self.log(f"DC Motor {motor_id} updated to speed {value}")
+                        return {'status': 'success', 'message': f'DC Motor {motor_id} updated to speed {value}'}
+                else:
+                    # Handle servo motor commands
+                    value = max(0, min(180, float(value)))
+                    result = self.serial_comm.send_command(motor_id, int(value))
+                    if result['status'] == 'success':
+                        self.log(f"Servo Motor {motor_id} updated to position {value}")
+                        return {'status': 'success', 'message': f'Servo Motor {motor_id} updated to position {value}'}
+                
+                return result
+            else:
+                self.log("Invalid motor_id or value")
+                return {
+                    'status': 'error',
+                    'message': 'Invalid motor_id or value'
+                }
+        except Exception as e:
+            self.log(f"Error in motor update: {str(e)}")
             return {
                 'status': 'error',
-                'message': 'Invalid motor_id or value'
+                'message': f'Error in motor update: {str(e)}'
             }
     
     def run(self):
         """Main server loop"""
         try:
+            self.log("Server starting main loop")
             while self.running:
-                # Wait for next request from client
-                message = self.socket.recv_json()
-                self.log(f"Received command: {message['type']}")
-                
-                # Process the command and send response immediately
-                response = self.handle_command(message)
-                self.socket.send_json(response)
+                try:
+                    # Wait for next request from client with timeout
+                    message = self.socket.recv_json()
+                    self.log(f"Received message: {message}")
+                    
+                    # Process the command and send response immediately
+                    response = self.handle_command(message)
+                    self.log(f"Sending response: {response}")
+                    self.socket.send_json(response)
+                    
+                except zmq.error.Again:
+                    continue  # Timeout, continue loop
+                except Exception as e:
+                    self.log(f"Error in main loop: {str(e)}")
+                    # Try to send error response
+                    try:
+                        self.socket.send_json({
+                            'status': 'error',
+                            'message': f'Server error: {str(e)}'
+                        })
+                    except:
+                        pass
         
         except KeyboardInterrupt:
-            print("\nShutting down server...")
+            self.log("\nShutting down server...")
         finally:
             self.cleanup()
     
     def cleanup(self):
         """Cleanup resources"""
+        self.log("Cleaning up resources...")
         self.running = False
         self.socket.close()
         self.context.term()

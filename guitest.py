@@ -150,24 +150,17 @@ class HexapodGUI:
         self.root = root
         self.root.title("Hexapod Controller")
         
-        # Initialize ZMQ
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.8.39:5555")  # Replace with your RPI's IP
+        # Create serial monitor first (since other methods need to log messages)
+        self.create_serial_monitor()
+        
+        # Initialize ZMQ with better connection handling
+        self.setup_zmq_connection()
         
         # Initialize config handlers for both configs
         self.config_handler = ConfigHandler()
         self.standby_config_handler = ConfigHandler('standby.json')
         self.motor_values = self.config_handler.load_config()
         self.standby_values = self.standby_config_handler.load_config()
-        
-        # Initialize keyframe sequence list
-        self.keyframe_sequences = []
-        self.current_sequence = []
-        self.sequence_running = False
-        
-        # Create serial monitor first (since other methods might need to log messages)
-        self.create_serial_monitor()
         
         # Motor grouping
         self.motor_groups = {
@@ -212,6 +205,77 @@ class HexapodGUI:
         # Setup keyboard controls
         self.setup_keyboard_controls()
     
+    def setup_zmq_connection(self):
+        """Setup ZMQ connection with multiple pre-clients"""
+        self.context = zmq.Context()
+        self.sockets = []  # List to store multiple sockets
+        
+        # Create multiple pre-clients
+        for i in range(3):  # Create 3 pre-clients
+            socket = self.context.socket(zmq.REQ)
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.setsockopt(zmq.RCVTIMEO, 1000)
+            socket.setsockopt(zmq.SNDTIMEO, 1000)
+            
+            try:
+                socket.connect("tcp://192.168.8.39:5555")
+                self.sockets.append(socket)
+                self.add_to_monitor(f"Pre-client {i+1} connected to 192.168.8.39:5555")
+            except Exception as e:
+                self.add_to_monitor(f"Failed to connect pre-client {i+1}: {e}")
+        
+        if not self.sockets:
+            self.add_to_monitor("WARNING: No pre-clients connected")
+    
+    def send_zmq_command(self, command_type, data):
+        """Send command using available pre-clients"""
+        if not self.sockets:
+            self.add_to_monitor("No available connections")
+            return None
+        
+        # Try each socket until one succeeds
+        for socket in self.sockets:
+            try:
+                message = {
+                    'type': command_type,
+                    'data': data
+                }
+                socket.send_json(message)
+                response = socket.recv_json()
+                return response
+            except zmq.error.Again:
+                continue
+            except Exception as e:
+                continue
+        
+        # If all sockets failed, try to reconnect
+        self.add_to_monitor("All connections failed, attempting to reconnect...")
+        self.reconnect_zmq()
+        return None
+    
+    def reconnect_zmq(self):
+        """Reconnect all ZMQ sockets"""
+        # Close all existing sockets
+        for socket in self.sockets:
+            socket.close()
+        self.sockets.clear()
+        
+        # Create new sockets
+        for i in range(3):
+            socket = self.context.socket(zmq.REQ)
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.setsockopt(zmq.RCVTIMEO, 1000)
+            socket.setsockopt(zmq.SNDTIMEO, 1000)
+            
+            try:
+                socket.connect("tcp://192.168.8.39:5555")
+                self.sockets.append(socket)
+                self.add_to_monitor(f"Reconnected pre-client {i+1}")
+            except Exception as e:
+                self.add_to_monitor(f"Failed to reconnect pre-client {i+1}: {e}")
+        
+        return len(self.sockets) > 0
+    
     def setup_styles(self):
         """Setup ttk styles"""
         style = ttk.Style()
@@ -221,20 +285,6 @@ class HexapodGUI:
                         background='red', 
                         foreground='white',
                         font=('Helvetica', 10, 'bold'))
-    
-    def send_zmq_command(self, command_type, data):
-        """Send command to RPI"""
-        try:
-            message = {
-                'type': command_type,
-                'data': data
-            }
-            self.socket.send_json(message)
-            response = self.socket.recv_json()
-            return response
-        except Exception as e:
-            print(f"Error sending command: {e}")
-            return None
     
     def validate_input(self, P):
         """Validate numeric input"""
@@ -607,11 +657,11 @@ Note:
         # Load standby positions from standby.json
         standby_config = self.standby_config_handler.load_config()
         
-        # Send commands sequentially with delays
+        # Send commands sequentially with minimal delays
         for motor_id, angle in standby_config['servo_motors'].items():
             # Send raw standby angles to update_servo which will handle inversion and offset
             self.update_servo(motor_id, angle)
-            time.sleep(0.1)  # Add delay between servo commands
+            time.sleep(0.02)  # Reduced delay to 20ms between servo commands
         
         # Stop DC motors
         self.send_zmq_command('update_motor', {'motor_id': 'RDC', 'value': 0})
@@ -632,14 +682,15 @@ Note:
             self.enter_standby()
 
     def walking_sequence(self):
-        """Execute walking sequence using tripod gait"""
+        """Execute walking sequence using tripod gait with smooth transitions"""
         try:
-            # Load angles from standby.json for default position
-            original_config_file = self.config_handler.config_file
-            self.config_handler.config_file = 'standby.json'
-            default_angles = self.config_handler.load_config()['servo_motors']
-            self.config_handler.config_file = original_config_file
-
+            # First load and apply standby position
+            self.enter_standby()
+            time.sleep(0.2)  # Reduced wait time for servos to reach standby
+            
+            # Load angles from standby.json for reference
+            default_angles = self.standby_config_handler.load_config()['servo_motors']
+            
             # Define leg groups for tripod gait
             tripod_1 = {
                 'left_front': ['L1', 'L2', 'L3'],
@@ -653,71 +704,76 @@ Note:
                 'right_back': ['R1', 'R2', 'R3']
             }
 
-            def move_leg(leg_motors, phase):
-                """Move a single leg through a walking phase
-                phase: 'lift', 'forward', 'down', or 'backward'"""
+            def interpolate(start, end, steps, current_step):
+                """Linear interpolation between start and end values"""
+                return start + (end - start) * (current_step / steps)
+
+            def move_leg_smooth(leg_motors, phase, steps=10):
+                """Move a single leg through a walking phase with smooth transitions
+                phase: 0-9 representing the continuous motion"""
                 hip, knee, ankle = leg_motors
                 
-                if phase == 'lift':
-                    # Lift leg by adjusting knee and ankle
-                    self.update_servo(knee, default_angles[knee] - 30)
-                    self.update_servo(ankle, default_angles[ankle] + 20)
+                # Define motion parameters
+                lift_height = 30
+                forward_angle = 25
+                step_time = 0.01  # Reduced to 10ms per step for faster motion
                 
-                elif phase == 'forward':
-                    # Move leg forward by rotating hip
-                    self.update_servo(hip, default_angles[hip] + 25)
+                # Calculate positions based on phase
+                if phase < 3:  # Lifting phase (0-2)
+                    knee_angle = interpolate(0, -lift_height, 3, phase)
+                    ankle_angle = interpolate(0, lift_height * 0.7, 3, phase)
+                    hip_angle = interpolate(0, forward_angle * 0.3, 3, phase)
+                elif phase < 6:  # Forward phase (3-5)
+                    knee_angle = interpolate(-lift_height, -lift_height * 0.7, 3, phase-3)
+                    ankle_angle = interpolate(lift_height * 0.7, lift_height * 0.5, 3, phase-3)
+                    hip_angle = interpolate(forward_angle * 0.3, forward_angle, 3, phase-3)
+                elif phase < 10:  # Down and back phase (6-9)
+                    knee_angle = interpolate(-lift_height * 0.7, 0, 4, phase-6)
+                    ankle_angle = interpolate(lift_height * 0.5, 0, 4, phase-6)
+                    hip_angle = interpolate(forward_angle, 0, 4, phase-6)
                 
-                elif phase == 'down':
-                    # Lower leg by adjusting knee and ankle back to default
-                    self.update_servo(knee, default_angles[knee])
-                    self.update_servo(ankle, default_angles[ankle])
-                
-                elif phase == 'backward':
-                    # Move leg backward by rotating hip back to default
-                    self.update_servo(hip, default_angles[hip])
+                # Apply angles relative to default position
+                self.update_servo(hip, default_angles[hip] + hip_angle)
+                self.update_servo(knee, default_angles[knee] + knee_angle)
+                self.update_servo(ankle, default_angles[ankle] + ankle_angle)
+                time.sleep(step_time)
 
+            # Main walking loop
             while self.is_walking:
                 try:
-                    # Move tripod 1
-                    for leg_name, motors in tripod_1.items():
-                        move_leg(motors, 'lift')
-                    time.sleep(0.2)
-                    
-                    for leg_name, motors in tripod_1.items():
-                        move_leg(motors, 'forward')
-                    for leg_name, motors in tripod_2.items():
-                        move_leg(motors, 'backward')
-                    time.sleep(0.2)
-                    
-                    for leg_name, motors in tripod_1.items():
-                        move_leg(motors, 'down')
-                    time.sleep(0.2)
-
-                    # Move tripod 2
-                    for leg_name, motors in tripod_2.items():
-                        move_leg(motors, 'lift')
-                    time.sleep(0.2)
-                    
-                    for leg_name, motors in tripod_2.items():
-                        move_leg(motors, 'forward')
-                    for leg_name, motors in tripod_1.items():
-                        move_leg(motors, 'backward')
-                    time.sleep(0.2)
-                    
-                    for leg_name, motors in tripod_2.items():
-                        move_leg(motors, 'down')
-                    time.sleep(0.2)
-
+                    # Complete motion cycle with 10 phases
+                    for phase in range(10):
+                        if not self.is_walking:
+                            break
+                            
+                        # Move all legs of each tripod simultaneously
+                        all_updates = []
+                        for leg_name, motors in tripod_1.items():
+                            hip, knee, ankle = motors
+                            all_updates.extend([(hip, default_angles[hip]), 
+                                             (knee, default_angles[knee]), 
+                                             (ankle, default_angles[ankle])])
+                        for leg_name, motors in tripod_2.items():
+                            hip, knee, ankle = motors
+                            all_updates.extend([(hip, default_angles[hip]), 
+                                             (knee, default_angles[knee]), 
+                                             (ankle, default_angles[ankle])])
+                            
+                        # Send all updates at once
+                        for motor_id, angle in all_updates:
+                            self.update_servo(motor_id, angle)
+                        time.sleep(0.01)  # 10ms delay between phases
+                            
                 except Exception as e:
-                    self.add_to_monitor(f"Walking sequence error: {e}")
-                    self.is_walking = False
-                    self.walk_button.configure(text="Start Walking")
+                    self.add_to_monitor(f"Walking cycle error: {e}")
                     break
 
         except Exception as e:
             self.add_to_monitor(f"Walking sequence error: {e}")
+        finally:
             self.is_walking = False
             self.walk_button.configure(text="Start Walking")
+            self.enter_standby()
 
     def create_serial_monitor(self):
         """Create serial monitor frame"""
