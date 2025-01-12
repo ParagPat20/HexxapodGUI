@@ -4,6 +4,7 @@ import platform
 import threading
 import time
 from serial_communication import SerialCommunicator
+import os
 
 class HexapodServer:
     def __init__(self, zmq_port=5555):
@@ -16,7 +17,7 @@ class HexapodServer:
         if platform.system() == 'Windows':
             serial_port = 'COM7'  # Update this to match your Windows COM port
         else:
-            serial_port = '/dev/ttyUSB0'  # Default for Raspberry Pi
+            serial_port = '/dev/ttyACM0' if os.path.exists('/dev/ttyACM0') else '/dev/ttyUSB0' if os.path.exists('/dev/ttyUSB0') else '/dev/ttyUSB1'
             
         self.serial_comm = SerialCommunicator(port=serial_port)
         self.running = True

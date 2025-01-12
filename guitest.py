@@ -165,36 +165,36 @@ class HexapodGUI:
         # Motor grouping
         self.motor_groups = {
             'left_front': {
-                "L1": "Coxa",    # Front Leg
-                "L3": "Femur",   # Front Mid
-                "L2": "Tibia"    # Front Lower
+                "L2": "Coxa",     # Front Coxa
+                "L3": "Femur",    # Front Femur
+                "L1": "Tibia"     # Front Tibia
             },
             'left_center': {
-                "L8": "Coxa",      # Center Leg
-                "L5": "Femur2",    # Center Upper
-                "L6": "Femur",     # Center Lower 2
-                "L7": "Tibia"      # Center Lower
+                "L8": "Coxa",     # Mid Coxa
+                "L6": "Femur1",   # Mid Femur1
+                "L7": "Femur2",   # Mid Femur2
+                "L5": "Tibia"     # Mid Tibia
             },
             'left_back': {
-                "L12": "Coxa",   # Back Leg
-                "L9": "Femur",   # Back Mid
-                "L10": "Tibia"   # Back Lower
+                "L11": "Coxa",    # Back Coxa
+                "L10": "Femur",   # Back Femur
+                "L9": "Tibia"     # Back Tibia
             },
             'right_front': {
-                "R16": "Coxa",   # Front Leg
-                "R15": "Femur",  # Front Mid
-                "R14": "Tibia"   # Front Lower
+                "R3": "Coxa",     # Front Coxa
+                "R2": "Femur",    # Front Femur
+                "R1": "Tibia"     # Front Tibia
             },
             'right_center': {
-                "R8": "Coxa",     # Center Leg
-                "R6": "Femur2",   # Center Upper
-                "R10": "Femur",   # Center Lower 2
-                "R12": "Tibia"    # Center Lower
+                "R8": "Coxa",     # Mid Coxa
+                "R7": "Femur1",   # Mid Femur1
+                "R6": "Femur2",   # Mid Femur2
+                "R5": "Tibia"     # Mid Tibia
             },
             'right_back': {
-                "R3": "Coxa",    # Back Leg
-                "R2": "Femur",   # Back Mid
-                "R1": "Tibia"    # Back Lower
+                "R9": "Coxa",     # Back Coxa
+                "R11": "Femur",   # Back Femur
+                "R10": "Tibia"    # Back Tibia
             }
         }
         
@@ -371,26 +371,41 @@ class HexapodGUI:
     def _on_dc_slider_change(self, value, value_var, entry, motor_id, slider):
         """Handle slider value changes for DC motor control"""
         try:
+            # Get current value
+            current_value = self.motor_values['dc_motors'].get(motor_id, 0)
+            
             # Snap to nearest 50
-            value = self._snap_to_increment(slider, float(value), 50)
-            value_var.set(f"{value:.0f}")
-            entry.delete(0, tk.END)
-            entry.insert(0, f"{value:.0f}")
+            new_value = self._snap_to_increment(slider, float(value), 50)
+            
+            # Only update if value has changed
+            if new_value != current_value:
+                value_var.set(f"{new_value:.0f}")
+                entry.delete(0, tk.END)
+                entry.insert(0, f"{new_value:.0f}")
+                
+                # Update the motor
+                self.update_dc_motor(motor_id, new_value)
         except ValueError:
             pass
 
     def _on_dc_entry_change(self, event, slider, value_var, entry, motor_id):
         """Handle entry value changes for DC motor control"""
         try:
-            value = float(entry.get())
-            # Snap to nearest 50
-            value = round(value / 50) * 50
-            value = max(-250, min(250, value))  # Clamp value
-            slider.set(value)
-            value_var.set(f"{value:.0f}")
+            # Get current value
+            current_value = self.motor_values['dc_motors'].get(motor_id, 0)
             
-            # Update the motor
-            self.update_dc_motor(motor_id, value)
+            # Get and validate new value
+            value = float(entry.get())
+            new_value = round(value / 50) * 50  # Snap to nearest 50
+            new_value = max(-250, min(250, new_value))  # Clamp value
+            
+            # Only update if value has changed
+            if new_value != current_value:
+                slider.set(new_value)
+                value_var.set(f"{new_value:.0f}")
+                
+                # Update the motor
+                self.update_dc_motor(motor_id, new_value)
         except ValueError:
             pass
 
@@ -482,27 +497,40 @@ class HexapodGUI:
     def _on_servo_slider_change(self, value, value_var, entry, motor_id):
         """Handle slider value changes for servo control"""
         try:
-            # Round to nearest integer for 1-degree increments
-            value = round(float(value))
-            value_var.set(f"{value}")
-            entry.delete(0, tk.END)
-            entry.insert(0, f"{value}")
+            # Get current value
+            current_value = self.motor_values['servo_motors'].get(motor_id, 90)
             
-            # Send the raw value to update_servo
-            self.update_servo(motor_id, value)
+            # Round to nearest integer for 1-degree increments
+            new_value = round(float(value))
+            
+            # Only update if value has changed
+            if new_value != current_value:
+                value_var.set(f"{new_value}")
+                entry.delete(0, tk.END)
+                entry.insert(0, f"{new_value}")
+                
+                # Send the raw value to update_servo
+                self.update_servo(motor_id, new_value)
         except ValueError:
             pass
     
     def _on_servo_entry_change(self, event, slider, value_var, entry, motor_id):
         """Handle entry value changes for servo control"""
         try:
-            value = round(float(entry.get()))  # Round to nearest integer
-            value = max(0, min(180, value))  # Clamp value
-            slider.set(value)
-            value_var.set(f"{value}")
+            # Get current value
+            current_value = self.motor_values['servo_motors'].get(motor_id, 90)
             
-            # Send the raw value to update_servo
-            self.update_servo(motor_id, value)
+            # Get and validate new value
+            new_value = round(float(entry.get()))  # Round to nearest integer
+            new_value = max(0, min(180, new_value))  # Clamp value
+            
+            # Only update if value has changed
+            if new_value != current_value:
+                slider.set(new_value)
+                value_var.set(f"{new_value}")
+                
+                # Send the raw value to update_servo
+                self.update_servo(motor_id, new_value)
         except ValueError:
             pass
     
@@ -682,14 +710,14 @@ Note:
             self.enter_standby()
 
     def walking_sequence(self):
-        """Execute walking sequence using tripod gait with smooth transitions"""
+        """Execute walking sequence using tripod gait with 4 phases"""
         try:
             # First load and apply standby position
             self.enter_standby()
-            time.sleep(0.2)  # Reduced wait time for servos to reach standby
+            time.sleep(0.1)  # Brief wait
             
             # Load angles from standby.json for reference
-            default_angles = self.standby_config_handler.load_config()['servo_motors']
+            standby_angles = self.standby_config_handler.load_config()['servo_motors']
             
             # Define leg groups for tripod gait
             tripod_1 = {
@@ -704,65 +732,73 @@ Note:
                 'right_back': ['R1', 'R2', 'R3']
             }
 
-            def interpolate(start, end, steps, current_step):
-                """Linear interpolation between start and end values"""
-                return start + (end - start) * (current_step / steps)
-
-            def move_leg_smooth(leg_motors, phase, steps=10):
-                """Move a single leg through a walking phase with smooth transitions
-                phase: 0-9 representing the continuous motion"""
-                hip, knee, ankle = leg_motors
-                
-                # Define motion parameters
-                lift_height = 30
-                forward_angle = 25
-                step_time = 0.01  # Reduced to 10ms per step for faster motion
-                
-                # Calculate positions based on phase
-                if phase < 3:  # Lifting phase (0-2)
-                    knee_angle = interpolate(0, -lift_height, 3, phase)
-                    ankle_angle = interpolate(0, lift_height * 0.7, 3, phase)
-                    hip_angle = interpolate(0, forward_angle * 0.3, 3, phase)
-                elif phase < 6:  # Forward phase (3-5)
-                    knee_angle = interpolate(-lift_height, -lift_height * 0.7, 3, phase-3)
-                    ankle_angle = interpolate(lift_height * 0.7, lift_height * 0.5, 3, phase-3)
-                    hip_angle = interpolate(forward_angle * 0.3, forward_angle, 3, phase-3)
-                elif phase < 10:  # Down and back phase (6-9)
-                    knee_angle = interpolate(-lift_height * 0.7, 0, 4, phase-6)
-                    ankle_angle = interpolate(lift_height * 0.5, 0, 4, phase-6)
-                    hip_angle = interpolate(forward_angle, 0, 4, phase-6)
-                
-                # Apply angles relative to default position
-                self.update_servo(hip, default_angles[hip] + hip_angle)
-                self.update_servo(knee, default_angles[knee] + knee_angle)
-                self.update_servo(ankle, default_angles[ankle] + ankle_angle)
-                time.sleep(step_time)
+            def move_legs(legs, phase, is_lifting_tripod=True):
+                """Move a set of legs according to the current phase
+                Phases:
+                0: Lift legs
+                1: Move legs forward
+                2: Place legs down
+                3: Push body forward
+                """
+                for leg_name, motors in legs.items():
+                    hip, knee, ankle = motors
+                    
+                    # Get standby positions for this leg
+                    hip_standby = standby_angles[hip]
+                    knee_standby = standby_angles[knee]
+                    ankle_standby = standby_angles[ankle]
+                    
+                    if is_lifting_tripod:
+                        if phase == 0:  # Lift
+                            self.update_servo(knee, knee_standby + 30)  # Lift knee
+                            self.update_servo(ankle, ankle_standby - 20)  # Adjust ankle
+                            self.update_servo(hip, hip_standby)  # Center hip
+                        elif phase == 1:  # Move Forward
+                            self.update_servo(hip, hip_standby - 25)  # Rotate forward
+                        elif phase == 2:  # Place Down
+                            self.update_servo(knee, knee_standby)  # Lower knee
+                            self.update_servo(ankle, ankle_standby)  # Reset ankle
+                        elif phase == 3:  # Push
+                            self.update_servo(hip, hip_standby + 15)  # Push back
+                    else:
+                        if phase == 0:  # Other tripod pushes
+                            self.update_servo(hip, hip_standby + 15)
+                        elif phase == 1:  # Maintain position
+                            self.update_servo(hip, hip_standby + 25)
+                        elif phase == 2:  # Prepare for next cycle
+                            self.update_servo(hip, hip_standby + 20)
+                        elif phase == 3:  # Return to start
+                            self.update_servo(hip, hip_standby)
+                    
+                    # Small delay between each motor update
+                    time.sleep(0.01)
 
             # Main walking loop
             while self.is_walking:
                 try:
-                    # Complete motion cycle with 10 phases
-                    for phase in range(10):
+                    # Complete walking cycle with 4 phases
+                    for phase in range(4):
                         if not self.is_walking:
                             break
                             
-                        # Move all legs of each tripod simultaneously
-                        all_updates = []
-                        for leg_name, motors in tripod_1.items():
-                            hip, knee, ankle = motors
-                            all_updates.extend([(hip, default_angles[hip]), 
-                                             (knee, default_angles[knee]), 
-                                             (ankle, default_angles[ankle])])
-                        for leg_name, motors in tripod_2.items():
-                            hip, knee, ankle = motors
-                            all_updates.extend([(hip, default_angles[hip]), 
-                                             (knee, default_angles[knee]), 
-                                             (ankle, default_angles[ankle])])
+                        # Move both tripods according to phase
+                        move_legs(tripod_1, phase, True)  # Lifting tripod
+                        move_legs(tripod_2, phase, False)  # Supporting tripod
+                        
+                        # Brief delay between phases
+                        time.sleep(0.05)
+                    
+                    # Switch roles and repeat
+                    for phase in range(4):
+                        if not self.is_walking:
+                            break
                             
-                        # Send all updates at once
-                        for motor_id, angle in all_updates:
-                            self.update_servo(motor_id, angle)
-                        time.sleep(0.01)  # 10ms delay between phases
+                        # Switch tripod roles
+                        move_legs(tripod_2, phase, True)  # Now lifting
+                        move_legs(tripod_1, phase, False)  # Now supporting
+                        
+                        # Brief delay between phases
+                        time.sleep(0.05)
                             
                 except Exception as e:
                     self.add_to_monitor(f"Walking cycle error: {e}")
